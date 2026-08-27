@@ -16,7 +16,7 @@ export const getProjectRootDir = (): string => {
 };
 
 export const getBulkPhotoDir = (subPath: string = ""): string => {
-  const base = process.env.VERCEL === "1" ? os.tmpdir() : getProjectRootDir();
+  const base = process.env.VERCEL ? os.tmpdir() : getProjectRootDir();
   return path.join(base, "bulk_photo", subPath);
 };
 
