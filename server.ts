@@ -9,7 +9,7 @@ import scanRoutes from "./routes/scanRoutes";
 import { getBulkPhotoDir, getProjectRootDir } from "./services/storageService";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const projectRoot = getProjectRootDir();
 const frontendRoot = path.join(projectRoot, "frontend");
 const distRoot = fs.existsSync(path.join(frontendRoot, "dist"))
