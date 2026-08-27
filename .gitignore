@@ -1,0 +1,6 @@
+node_modules
+bulk_photo
+.env
+.env.local
+dist
+*.log
