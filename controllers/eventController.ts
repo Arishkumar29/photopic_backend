@@ -26,7 +26,7 @@ function saveEventsToDisk() {
     ensureDirExists(dir);
     fs.writeFileSync(dbPath, JSON.stringify(events, null, 2));
   } catch (err) {
-    console.error("Failed to save events to disk:", err);
+    console.warn("[eventController] Could not persist events to disk (running in memory/serverless):", err);
   }
 }
 
@@ -39,37 +39,45 @@ function loadEventsFromDisk() {
       Object.assign(events, loaded);
     }
   } catch (err) {
-    console.error("Failed to load events from disk:", err);
+    console.warn("[eventController] Could not load events from disk:", err);
   }
 
-  if (Object.keys(events).length === 0) {
-    const sampleEventId = "evt_sample";
-    const eventDir = getBulkPhotoDir(sampleEventId);
-    ensureDirExists(eventDir);
+  try {
+    if (Object.keys(events).length === 0) {
+      const sampleEventId = "evt_sample";
+      const eventDir = getBulkPhotoDir(sampleEventId);
+      ensureDirExists(eventDir);
 
-    const photos: string[] = [];
-    const samplesDir = path.join(process.cwd(), "bulk_photo_samples");
-    if (fs.existsSync(samplesDir)) {
-      const sampleFiles = fs.readdirSync(samplesDir);
-      for (const file of sampleFiles) {
-        const srcPath = path.join(samplesDir, file);
-        const destPath = path.join(eventDir, file);
-        fs.copyFileSync(srcPath, destPath);
-        photos.push(`/bulk_photo/${sampleEventId}/${file}`);
+      const photos: string[] = [];
+      const samplesDir = path.join(process.cwd(), "bulk_photo_samples");
+      if (fs.existsSync(samplesDir)) {
+        try {
+          const sampleFiles = fs.readdirSync(samplesDir);
+          for (const file of sampleFiles) {
+            const srcPath = path.join(samplesDir, file);
+            const destPath = path.join(eventDir, file);
+            try {
+              fs.copyFileSync(srcPath, destPath);
+            } catch (e) {}
+            photos.push(`/bulk_photo/${sampleEventId}/${file}`);
+          }
+        } catch (e) {}
       }
+
+      events[sampleEventId] = {
+        eventId: sampleEventId,
+        folderId: "local_upload",
+        accessToken: "sample_token",
+        orgName: "Photopic Studio",
+        eventName: "Summer Celebration & Gala 2026",
+        photos,
+        coverImage: "https://images.unsplash.com/photo-1519741497674-611481863552?w=800&auto=format&fit=crop&q=80"
+      };
+
+      saveEventsToDisk();
     }
-
-    events[sampleEventId] = {
-      eventId: sampleEventId,
-      folderId: "local_upload",
-      accessToken: "sample_token",
-      orgName: "Photopic Studio",
-      eventName: "Summer Celebration & Gala 2026",
-      photos,
-      coverImage: "https://images.unsplash.com/photo-1519741497674-611481863552?w=800&auto=format&fit=crop&q=80"
-    };
-
-    saveEventsToDisk();
+  } catch (err) {
+    console.warn("[eventController] Sample event initialization skipped:", err);
   }
 }
 

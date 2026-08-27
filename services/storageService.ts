@@ -21,8 +21,12 @@ export const getBulkPhotoDir = (subPath: string = ""): string => {
 };
 
 export const ensureDirExists = (dirPath: string): void => {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+  } catch (err) {
+    console.warn(`[storageService] Could not create dir ${dirPath}:`, err);
   }
 };
 
