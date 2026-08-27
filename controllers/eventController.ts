@@ -1,8 +1,8 @@
 import { Request, Response } from "express";
 import path from "path";
 import fs from "fs";
-import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService";
-import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/driveService";
+import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
+import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/driveService.js";
 
 export interface EventData {
   eventId: string;

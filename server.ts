@@ -3,10 +3,10 @@ import path from "path";
 import fs from "fs";
 import "dotenv/config";
 
-import eventRoutes from "./routes/eventRoutes";
-import analyticsRoutes from "./routes/analyticsRoutes";
-import scanRoutes from "./routes/scanRoutes";
-import { getBulkPhotoDir, getProjectRootDir } from "./services/storageService";
+import eventRoutes from "./routes/eventRoutes.js";
+import analyticsRoutes from "./routes/analyticsRoutes.js";
+import scanRoutes from "./routes/scanRoutes.js";
+import { getBulkPhotoDir, getProjectRootDir } from "./services/storageService.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;

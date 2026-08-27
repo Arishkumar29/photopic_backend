@@ -1,6 +1,6 @@
 import path from "path";
 import { spawn } from "child_process";
-import { getProjectRootDir } from "./storageService";
+import { getProjectRootDir } from "./storageService.js";
 
 export interface ScanMatch {
   name: string;

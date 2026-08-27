@@ -3,10 +3,10 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import os from "os";
-import { events } from "./eventController";
-import { initAnalytics, eventAnalytics } from "./analyticsController";
-import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService";
-import { runPythonScan, ScanMatch } from "../services/faceScanService";
+import { events } from "./eventController.js";
+import { initAnalytics, eventAnalytics } from "./analyticsController.js";
+import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
+import { runPythonScan, ScanMatch } from "../services/faceScanService.js";
 
 const scanRateLimit = new Map<string, { count: number; resetTime: number }>();
 

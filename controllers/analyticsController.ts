@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { events } from "./eventController";
+import { events } from "./eventController.js";
 
 export interface EventAnalytics {
   visits: number;

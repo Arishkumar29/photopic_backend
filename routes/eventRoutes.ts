@@ -8,8 +8,8 @@ import {
   uploadEventPhotos,
   clearEventPhotos,
   proxyDriveImage
-} from "../controllers/eventController";
-import { getBulkPhotoDir, ensureDirExists } from "../services/storageService";
+} from "../controllers/eventController.js";
+import { getBulkPhotoDir, ensureDirExists } from "../services/storageService.js";
 
 const router = Router();
 

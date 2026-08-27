@@ -4,7 +4,7 @@ import {
   trackView,
   trackDownload,
   getAnalytics
-} from "../controllers/analyticsController";
+} from "../controllers/analyticsController.js";
 
 const router = Router();
 

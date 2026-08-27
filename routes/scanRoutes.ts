@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { scanFaces, rateLimiter } from "../controllers/scanController";
+import { scanFaces, rateLimiter } from "../controllers/scanController.js";
 
 const router = Router();
 
