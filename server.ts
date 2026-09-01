@@ -18,22 +18,30 @@ const distRoot = fs.existsSync(path.join(frontendRoot, "dist"))
   ? path.join(frontendRoot, "dist")
   : path.join(projectRoot, "dist");
 
-// ── CORS — allow Vercel frontend to call the backend ──────────────────
+// ── CORS — allow any frontend origin to call the backend ────────────────
 app.use((req, res, next) => {
-  const allowedOrigins = [
-    process.env.FRONTEND_URL,
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:3000',
-  ].filter(Boolean);
-  const origin = req.headers.origin as string;
-  if (!origin || allowedOrigins.includes(origin) || allowedOrigins.some(o => o && origin.endsWith('.vercel.app'))) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS,PATCH");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With,Accept");
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  next();
+});
+
+// Ensure DB connection is active for each incoming request (handles serverless cold starts)
+app.use(async (req, res, next) => {
+  if (process.env.MONGODB_URI) {
+    try {
+      await connectDB();
+    } catch (e) {}
+  }
   next();
 });
 
@@ -45,6 +53,7 @@ app.get("/", (req, res) => {
     status: "ok",
     service: "GWC PhotoPic Backend API",
     message: "PhotoPic API is live and operational.",
+    environment: process.env.VERCEL ? "vercel-serverless" : "standalone",
     endpoints: [
       "/api/events",
       "/api/create-event",
@@ -56,6 +65,10 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
+  res.json({ status: "healthy", timestamp: new Date().toISOString() });
+});
+
+app.get("/health", (req, res) => {
   res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
@@ -84,10 +97,14 @@ app.use("/bulk_photo", (req, res, next) => {
   next();
 });
 
-// ── Register API Routes ──────────────────────────────────────────────
+// ── Register API Routes (both with /api prefix and at root for flexibility) ──
 app.use("/api", eventRoutes);
 app.use("/api", analyticsRoutes);
 app.use("/api", scanRoutes);
+
+app.use(eventRoutes);
+app.use(analyticsRoutes);
+app.use(scanRoutes);
 
 // ── Standalone Server Starter ────────────────────────────────────────
 async function startServer() {
@@ -157,7 +174,13 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.NOW_REGION ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME
+);
+
+if (!isServerless) {
   startServer();
 } else {
   // Serverless (Vercel): connect DB once per cold start

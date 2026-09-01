@@ -216,13 +216,35 @@ export const createEvent = async (req: Request, res: Response) => {
   }
 };
 
-export const getEvents = (req: Request, res: Response) => {
+async function findEvent(eventId: string): Promise<EventData | null> {
+  if (events[eventId]) return events[eventId];
+  if (isDbConnected()) {
+    try {
+      const doc = await (EventModel.findOne({ eventId }) as any).lean();
+      if (doc) return syncToMemory(doc);
+    } catch (err) {
+      console.warn(`[findEvent] Failed to load event ${eventId} from DB:`, err);
+    }
+  }
+  return null;
+}
+
+export const getEvents = async (req: Request, res: Response) => {
+  if (isDbConnected()) {
+    try {
+      const docs = await (EventModel.find() as any).lean() as any[];
+      docs.forEach(syncToMemory);
+    } catch (err) {
+      console.warn("Could not query DB in getEvents:", err);
+    }
+  }
   res.json({ events: Object.values(events) });
 };
 
 export const deleteEvent = async (req: Request, res: Response) => {
   const { eventId } = req.params;
-  if (events[eventId]) {
+  const event = await findEvent(eventId);
+  if (event) {
     const eventDir = getBulkPhotoDir(eventId);
     removeDirSync(eventDir);
     delete events[eventId];
@@ -242,7 +264,7 @@ export const deleteEvent = async (req: Request, res: Response) => {
 export const updateEvent = async (req: Request, res: Response) => {
   const { eventId } = req.params;
   const { eventName, orgName, coverImage, description, eventLocation, eventType, folderId } = req.body;
-  const event = events[eventId];
+  const event = await findEvent(eventId);
   if (!event) {
     return res.status(404).json({ error: "Event not found" });
   }
@@ -266,18 +288,18 @@ export const updateEvent = async (req: Request, res: Response) => {
     }
   }
 
-    if (isDbConnected()) {
-      try { await EventModel.findOneAndUpdate({ eventId }, { $set: event }).exec(); } catch (e) {}
-    } else {
-      saveEventsToDisk();
-    }
+  if (isDbConnected()) {
+    try { await EventModel.findOneAndUpdate({ eventId }, { $set: event }).exec(); } catch (e) {}
+  } else {
+    saveEventsToDisk();
+  }
 
   res.json({ success: true, event });
 };
 
 export const uploadEventPhotos = async (req: Request, res: Response) => {
   const { eventId } = req.params;
-  const event = events[eventId];
+  const event = await findEvent(eventId);
   if (!event) {
     return res.status(404).json({ error: "Event not found" });
   }
@@ -321,7 +343,7 @@ export const uploadEventPhotos = async (req: Request, res: Response) => {
 
 export const clearEventPhotos = async (req: Request, res: Response) => {
   const { eventId } = req.params;
-  const event = events[eventId];
+  const event = await findEvent(eventId);
   if (!event) {
     return res.status(404).json({ error: "Event not found" });
   }
