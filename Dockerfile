@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Make `python` point to python3 (required by faceScanService spawn("python",...))
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
 WORKDIR /app
 
 # Install Python requirements
@@ -30,4 +33,4 @@ ENV NODE_ENV=production
 EXPOSE 3000
 
 # Start server
-CMD ["node", "--loader", "tsx", "server.ts"]
+CMD ["npx", "tsx", "server.ts"]

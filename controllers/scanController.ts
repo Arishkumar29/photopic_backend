@@ -32,6 +32,15 @@ export const rateLimiter = (req: Request, res: Response, next: NextFunction) => 
 };
 
 export const scanFaces = async (req: Request, res: Response) => {
+  // Face scanning requires Python + OpenCV which is not available on Vercel.
+  // To enable face scanning, deploy the backend on Railway or Render instead.
+  if (process.env.VERCEL) {
+    return res.status(503).json({
+      error: "Face scanning is not available on this deployment. Please contact the event organizer.",
+      unavailable: true,
+    });
+  }
+
   let tempSelfiePath = "";
   let scanTempDir = "";
 

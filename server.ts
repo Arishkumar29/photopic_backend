@@ -7,6 +7,8 @@ import eventRoutes from "./routes/eventRoutes.js";
 import analyticsRoutes from "./routes/analyticsRoutes.js";
 import scanRoutes from "./routes/scanRoutes.js";
 import { getBulkPhotoDir, getProjectRootDir } from "./services/storageService.js";
+import { connectDB } from "./services/dbService.js";
+import { loadEventsFromDB } from "./controllers/eventController.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -89,10 +91,15 @@ app.use("/api", scanRoutes);
 
 // ── Standalone Server Starter ────────────────────────────────────────
 async function startServer() {
+  // Connect to MongoDB and load events (falls back to disk/memory if no MONGODB_URI)
+  await connectDB();
+  await loadEventsFromDB();
+
   const hasFrontendModules = fs.existsSync(path.join(frontendRoot, "node_modules", "vite"));
   
   if (process.env.NODE_ENV !== "production" && hasFrontendModules) {
     try {
+      // @ts-ignore — vite is a frontend dev-only dep, dynamically imported only in dev mode
       const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         root: frontendRoot,
@@ -152,6 +159,9 @@ async function startServer() {
 
 if (!process.env.VERCEL) {
   startServer();
+} else {
+  // Serverless (Vercel): connect DB once per cold start
+  connectDB().then(() => loadEventsFromDB()).catch(console.error);
 }
 
 export default app;

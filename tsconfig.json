@@ -7,7 +7,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "strict": false,
-    "noEmit": true
+    "noEmit": true,
+    "resolveJsonModule": true
   },
-  "include": ["server.ts", "api", "controllers", "routes", "services", "models"]
+  "include": ["server.ts", "api", "controllers", "routes", "services", "models"],
+  "exclude": ["node_modules", "../frontend"]
 }

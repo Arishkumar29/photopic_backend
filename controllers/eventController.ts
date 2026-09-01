@@ -3,6 +3,10 @@ import path from "path";
 import fs from "fs";
 import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
 import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/driveService.js";
+import { isDbConnected } from "../services/dbService.js";
+import { EventModel as _EventModel } from "../models/Event.js";
+// Cast to any to avoid mongoose v8 TypeScript overload union incompatibility
+const EventModel = _EventModel as any;
 
 export interface EventData {
   eventId: string;
@@ -13,10 +17,52 @@ export interface EventData {
   photos: string[];
   driveFiles?: { id: string; thumbUrl: string; name: string }[];
   coverImage?: string;
+  description?: string;
+  eventLocation?: string;
+  eventType?: string;
 }
 
+// In-memory fallback store (used when DB is unavailable / no MONGODB_URI)
 export const events: Record<string, EventData> = {};
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Sync a DB document into the in-memory map for consistency */
+function syncToMemory(doc: any) {
+  const plain: EventData = {
+    eventId:       doc.eventId,
+    folderId:      doc.folderId,
+    accessToken:   doc.accessToken,
+    orgName:       doc.orgName,
+    eventName:     doc.eventName,
+    photos:        doc.photos || [],
+    driveFiles:    doc.driveFiles || [],
+    coverImage:    doc.coverImage,
+    description:   doc.description,
+    eventLocation: doc.eventLocation,
+    eventType:     doc.eventType,
+  };
+  events[doc.eventId] = plain;
+  return plain;
+}
+
+/** Load all events from MongoDB into memory on startup */
+export async function loadEventsFromDB() {
+  if (!isDbConnected()) {
+    loadEventsFromDisk();
+    return;
+  }
+  try {
+    const docs = await (EventModel.find() as any).lean() as any[];
+    docs.forEach(syncToMemory);
+    console.log(`[eventController] Loaded ${docs.length} events from MongoDB.`);
+  } catch (err) {
+    console.warn("[eventController] Could not load events from MongoDB:", err);
+    loadEventsFromDisk();
+  }
+}
+
+/** Legacy disk persistence (used locally / without DB) */
 const getDbFilePath = () => path.join(getBulkPhotoDir(), "events_db.json");
 
 function saveEventsToDisk() {
@@ -26,7 +72,8 @@ function saveEventsToDisk() {
     ensureDirExists(dir);
     fs.writeFileSync(dbPath, JSON.stringify(events, null, 2));
   } catch (err) {
-    console.warn("[eventController] Could not persist events to disk (running in memory/serverless):", err);
+    // Expected to fail on Vercel (read-only FS), already using DB
+    console.warn("[eventController] Could not persist events to disk (using DB instead).");
   }
 }
 
@@ -42,6 +89,7 @@ function loadEventsFromDisk() {
     console.warn("[eventController] Could not load events from disk:", err);
   }
 
+  // Seed a sample event if nothing exists
   try {
     if (Object.keys(events).length === 0) {
       const sampleEventId = "evt_sample";
@@ -51,17 +99,13 @@ function loadEventsFromDisk() {
       const photos: string[] = [];
       const samplesDir = path.join(process.cwd(), "bulk_photo_samples");
       if (fs.existsSync(samplesDir)) {
-        try {
-          const sampleFiles = fs.readdirSync(samplesDir);
-          for (const file of sampleFiles) {
-            const srcPath = path.join(samplesDir, file);
-            const destPath = path.join(eventDir, file);
-            try {
-              fs.copyFileSync(srcPath, destPath);
-            } catch (e) {}
-            photos.push(`/bulk_photo/${sampleEventId}/${file}`);
-          }
-        } catch (e) {}
+        const sampleFiles = fs.readdirSync(samplesDir);
+        for (const file of sampleFiles) {
+          const srcPath = path.join(samplesDir, file);
+          const destPath = path.join(eventDir, file);
+          try { fs.copyFileSync(srcPath, destPath); } catch (e) {}
+          photos.push(`/bulk_photo/${sampleEventId}/${file}`);
+        }
       }
 
       events[sampleEventId] = {
@@ -81,7 +125,7 @@ function loadEventsFromDisk() {
   }
 }
 
-loadEventsFromDisk();
+// ── Controllers ───────────────────────────────────────────────────────────────
 
 export const createEvent = async (req: Request, res: Response) => {
   const { eventId, folderId, accessToken = "default_token", orgName, eventName, coverImage } = req.body;
@@ -95,7 +139,7 @@ export const createEvent = async (req: Request, res: Response) => {
 
     const photos: string[] = [];
 
-    if (folderId === 'local_upload') {
+    if (folderId === "local_upload") {
       const rootDir = getBulkPhotoDir();
       if (fs.existsSync(rootDir)) {
         const rootFiles = fs.readdirSync(rootDir);
@@ -105,9 +149,7 @@ export const createEvent = async (req: Request, res: Response) => {
           if (stats.isFile() && file !== "README.md" && !file.startsWith("temp_selfie_")) {
             const destPath = path.join(eventDir, file);
             fs.copyFileSync(srcPath, destPath);
-            try {
-              fs.unlinkSync(srcPath);
-            } catch (e) {
+            try { fs.unlinkSync(srcPath); } catch (e) {
               console.warn(`Could not delete original file ${srcPath} after copy:`, e);
             }
             photos.push(`/bulk_photo/${eventId}/${file}`);
@@ -129,31 +171,44 @@ export const createEvent = async (req: Request, res: Response) => {
         }
       }
 
-      events[eventId] = {
-        eventId,
-        folderId,
-        accessToken,
+      const eventData: EventData = {
+        eventId, folderId, accessToken,
         orgName: orgName || "Photographer",
         eventName: eventName || "New Event",
-        photos,
-        coverImage
+        photos, coverImage
       };
+      events[eventId] = eventData;
+
+      if (isDbConnected()) {
+        await EventModel.findOneAndUpdate(
+          { eventId },
+          { $set: eventData },
+          { upsert: true, new: true }
+        ).exec();
+      } else {
+        saveEventsToDisk();
+      }
     } else {
       const driveFiles = await scrapeDriveFolderEntries(folderId);
-      events[eventId] = {
-        eventId,
-        folderId,
-        accessToken,
+      const eventData: EventData = {
+        eventId, folderId, accessToken,
         orgName: orgName || "Photographer",
         eventName: eventName || "New Event",
-        photos: [],
-        driveFiles,
-        coverImage
+        photos: [], driveFiles, coverImage
       };
-      saveEventsToDisk();
+      events[eventId] = eventData;
+
+      if (isDbConnected()) {
+        await EventModel.findOneAndUpdate(
+          { eventId },
+          { $set: eventData },
+          { upsert: true, new: true }
+        ).exec();
+      } else {
+        saveEventsToDisk();
+      }
     }
 
-    saveEventsToDisk();
     res.json({ success: true });
   } catch (error: any) {
     console.error("Failed to create event:", error);
@@ -165,13 +220,19 @@ export const getEvents = (req: Request, res: Response) => {
   res.json({ events: Object.values(events) });
 };
 
-export const deleteEvent = (req: Request, res: Response) => {
+export const deleteEvent = async (req: Request, res: Response) => {
   const { eventId } = req.params;
   if (events[eventId]) {
     const eventDir = getBulkPhotoDir(eventId);
     removeDirSync(eventDir);
     delete events[eventId];
-    saveEventsToDisk();
+
+    if (isDbConnected()) {
+      try { await EventModel.deleteOne({ eventId }); } catch (e) {}
+    } else {
+      saveEventsToDisk();
+    }
+
     res.json({ success: true });
   } else {
     res.status(404).json({ error: "Event not found" });
@@ -189,13 +250,13 @@ export const updateEvent = async (req: Request, res: Response) => {
   if (eventName !== undefined) event.eventName = eventName;
   if (orgName !== undefined) event.orgName = orgName;
   if (coverImage !== undefined) event.coverImage = coverImage;
-  if (description !== undefined) (event as any).description = description;
-  if (eventLocation !== undefined) (event as any).eventLocation = eventLocation;
-  if (eventType !== undefined) (event as any).eventType = eventType;
+  if (description !== undefined) event.description = description;
+  if (eventLocation !== undefined) event.eventLocation = eventLocation;
+  if (eventType !== undefined) event.eventType = eventType;
 
   if (folderId !== undefined && folderId !== event.folderId) {
     event.folderId = folderId;
-    if (folderId !== 'local_upload' && folderId.trim()) {
+    if (folderId !== "local_upload" && folderId.trim()) {
       try {
         const driveFiles = await scrapeDriveFolderEntries(folderId);
         event.driveFiles = driveFiles;
@@ -205,11 +266,16 @@ export const updateEvent = async (req: Request, res: Response) => {
     }
   }
 
-  saveEventsToDisk();
+    if (isDbConnected()) {
+      try { await EventModel.findOneAndUpdate({ eventId }, { $set: event }).exec(); } catch (e) {}
+    } else {
+      saveEventsToDisk();
+    }
+
   res.json({ success: true, event });
 };
 
-export const uploadEventPhotos = (req: Request, res: Response) => {
+export const uploadEventPhotos = async (req: Request, res: Response) => {
   const { eventId } = req.params;
   const event = events[eventId];
   if (!event) {
@@ -230,9 +296,7 @@ export const uploadEventPhotos = (req: Request, res: Response) => {
       if (stats.isFile() && file !== "README.md" && !file.startsWith("temp_selfie_")) {
         const destPath = path.join(eventDir, file);
         fs.copyFileSync(srcPath, destPath);
-        try {
-          fs.unlinkSync(srcPath);
-        } catch (e) {
+        try { fs.unlinkSync(srcPath); } catch (e) {
           console.warn(`Could not delete original file ${srcPath} after copy:`, e);
         }
         const photoUrl = `/bulk_photo/${eventId}/${file}`;
@@ -243,14 +307,19 @@ export const uploadEventPhotos = (req: Request, res: Response) => {
       }
     }
 
-    saveEventsToDisk();
+    if (isDbConnected()) {
+      try { await EventModel.findOneAndUpdate({ eventId }, { $set: { photos: event.photos } }).exec(); } catch (e) {}
+    } else {
+      saveEventsToDisk();
+    }
+
     res.json({ success: true, photos: event.photos });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to upload photos to event" });
   }
 };
 
-export const clearEventPhotos = (req: Request, res: Response) => {
+export const clearEventPhotos = async (req: Request, res: Response) => {
   const { eventId } = req.params;
   const event = events[eventId];
   if (!event) {
@@ -266,7 +335,13 @@ export const clearEventPhotos = (req: Request, res: Response) => {
       }
     }
     event.photos = [];
-    saveEventsToDisk();
+
+    if (isDbConnected()) {
+      try { await EventModel.findOneAndUpdate({ eventId }, { $set: { photos: [] } }).exec(); } catch (e) {}
+    } else {
+      saveEventsToDisk();
+    }
+
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to clear event photos" });
