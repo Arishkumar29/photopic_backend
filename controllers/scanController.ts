@@ -146,9 +146,13 @@ export const scanFaces = async (req: Request, res: Response) => {
           const result = await runPythonScan(tempSelfiePath, scanBulkDir);
           if (result && !result.error && Array.isArray(result.matches)) {
             matchedUrls = result.matches.map((m: any) => {
+              const diskPath = path.join(scanBulkDir, m.name);
+              if (fs.existsSync(diskPath)) {
+                return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+              }
               const matchFile = event!.driveFiles?.find(f => f.name === m.name);
-              if (matchFile?.thumbUrl) return matchFile.thumbUrl;
               if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
+              if (matchFile?.thumbUrl) return matchFile.thumbUrl;
               return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
             }).filter(Boolean) as string[];
             pythonMatched = true;

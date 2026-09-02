@@ -12,6 +12,7 @@
     "express": "^4.21.2",
     "mongoose": "^9.9.4",
     "multer": "^2.2.0",
+    "onnxruntime-node": "^1.29.0",
     "tsx": "^4.22.4"
   },
   "devDependencies": {

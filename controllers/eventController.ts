@@ -35,7 +35,14 @@ function syncToMemory(doc: any) {
   const driveFiles = doc.driveFiles || [];
   let photos = doc.photos || [];
   if (photos.length === 0 && driveFiles.length > 0) {
-    photos = driveFiles.map((f: any) => f.thumbUrl || `/api/drive-proxy/${f.id}`);
+    const eventDir = getBulkPhotoDir(doc.eventId);
+    photos = driveFiles.map((f: any) => {
+      const diskPath = path.join(eventDir, f.name);
+      if (fs.existsSync(diskPath)) {
+        return `/bulk_photo/${doc.eventId}/${encodeURIComponent(f.name)}`;
+      }
+      return `/api/drive-proxy/${f.id}`;
+    });
   }
 
   const plain: EventData = {
@@ -215,7 +222,14 @@ export const getEvents = async (req: Request, res: Response) => {
   // Backfill photos array for any event where photos is empty but driveFiles exists
   Object.values(events).forEach(e => {
     if ((!e.photos || e.photos.length === 0) && e.driveFiles && e.driveFiles.length > 0) {
-      e.photos = e.driveFiles.map(f => f.thumbUrl || `/api/drive-proxy/${f.id}`);
+      const eventDir = getBulkPhotoDir(e.eventId);
+      e.photos = e.driveFiles.map(f => {
+        const diskPath = path.join(eventDir, f.name);
+        if (fs.existsSync(diskPath)) {
+          return `/bulk_photo/${e.eventId}/${encodeURIComponent(f.name)}`;
+        }
+        return `/api/drive-proxy/${f.id}`;
+      });
     }
   });
 
@@ -316,6 +330,17 @@ export const clearEventPhotos = async (req: Request, res: Response) => {
 export const proxyDriveImage = async (req: Request, res: Response) => {
   const { fileId } = req.params;
   const isOneDrive = req.query.source === "onedrive" || fileId.startsWith("od_") || isOneDriveUrl(fileId);
+
+  // Check if this file is already on local disk in bulk_photo
+  for (const ev of Object.values(events)) {
+    const match = ev.driveFiles?.find(f => f.id === fileId);
+    if (match) {
+      const diskPath = path.join(getBulkPhotoDir(ev.eventId), match.name);
+      if (fs.existsSync(diskPath) && fs.statSync(diskPath).size > 100) {
+        return res.sendFile(diskPath);
+      }
+    }
+  }
 
   try {
     if (isOneDrive) {
