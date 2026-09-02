@@ -8,9 +8,6 @@
     "start": "tsx server.ts"
   },
   "dependencies": {
-    "@tensorflow/tfjs": "^4.22.0",
-    "@vladmandic/face-api": "^1.7.15",
-    "canvas": "^3.2.3",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "mongoose": "^9.9.4",

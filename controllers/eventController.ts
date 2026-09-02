@@ -6,7 +6,6 @@ import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/dri
 import { isOneDriveUrl, scrapeOneDriveFolderEntries, proxyOneDriveFileContent } from "../services/oneDriveService.js";
 import { isDbConnected } from "../services/dbService.js";
 import { EventModel as _EventModel } from "../models/Event.js";
-import { extractDescriptorsFromBuffer } from "../services/faceEmbeddingService.js";
 // Cast to any to avoid mongoose v8 TypeScript overload union incompatibility
 const EventModel = _EventModel as any;
 
@@ -184,93 +183,10 @@ export const createEvent = async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, event: eventData });
-
-    // Background: compute face embeddings for Vercel-compatible JS matching
-    setImmediate(() => computeEmbeddingsBackground(eventId).catch(e =>
-      console.warn('[eventController] Background embedding failed:', e?.message)
-    ));
   } catch (error: any) {
     console.error("Failed to create event:", error);
     res.status(500).json({ error: "Failed to create event" });
   }
-};
-
-// ── Face Embedding Background Job ────────────────────────────────────────────
-
-/**
- * Downloads each event photo thumbnail and extracts face descriptors (128-d)
- * using face-api.js + TF.js CPU. Stores them on the event for Vercel matching.
- * Runs in the background after event create/update so the API response is fast.
- */
-async function computeEmbeddingsBackground(eventId: string): Promise<void> {
-  const event = events[eventId];
-  if (!event) return;
-
-  const driveFiles = event.driveFiles || [];
-  if (driveFiles.length === 0) return;
-
-  console.log(`[embeddings] Computing face descriptors for ${driveFiles.length} photos in event ${eventId}...`);
-  const t0 = Date.now();
-
-  const descriptorEntries: { name: string; thumbUrl: string; descriptors: number[][] }[] = [];
-
-  // Process in batches to avoid OOM
-  const BATCH = 10;
-  for (let i = 0; i < driveFiles.length; i += BATCH) {
-    const batch = driveFiles.slice(i, i + BATCH);
-    await Promise.all(batch.map(async (file) => {
-      try {
-        let url = file.thumbUrl || '';
-        if (url.includes('googleusercontent.com')) {
-          url = url.replace(/=s\d+$/, '=s400');
-        }
-        const res = await fetch(url, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (!res.ok) return;
-        const buf = Buffer.from(await res.arrayBuffer());
-        const descs = await extractDescriptorsFromBuffer(buf);
-        if (descs.length > 0) {
-          descriptorEntries.push({ name: file.name, thumbUrl: file.thumbUrl, descriptors: descs });
-        }
-      } catch (e: any) {
-        // Skip photos that fail to download or have no face
-      }
-    }));
-
-    if (i % 50 === 0 || i + BATCH >= driveFiles.length) {
-      console.log(`[embeddings] ${Math.min(i + BATCH, driveFiles.length)}/${driveFiles.length} processed, ${descriptorEntries.length} faces found`);
-    }
-  }
-
-  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`[embeddings] Done in ${elapsed}s — ${descriptorEntries.length} photos with faces for event ${eventId}`);
-
-  // Persist to in-memory store and MongoDB
-  event.faceDescriptors = descriptorEntries;
-  if (isDbConnected()) {
-    try {
-      await EventModel.findOneAndUpdate(
-        { eventId },
-        { $set: { faceDescriptors: descriptorEntries } }
-      ).exec();
-      console.log(`[embeddings] Saved ${descriptorEntries.length} descriptor entries to MongoDB for ${eventId}`);
-    } catch (e: any) {
-      console.warn('[embeddings] Failed to save to MongoDB:', e?.message);
-    }
-  }
-}
-
-/** HTTP endpoint: POST /api/events/:eventId/compute-embeddings (admin-triggered) */
-export const computeEmbeddings = async (req: Request, res: Response) => {
-  const { eventId } = req.params;
-  const event = await findEvent(eventId);
-  if (!event) return res.status(404).json({ error: 'Event not found' });
-
-  // Respond immediately then compute in background
-  res.json({ success: true, message: `Computing embeddings for ${event.driveFiles?.length || 0} photos. This runs in the background — check back in a minute.` });
-
-  setImmediate(() => computeEmbeddingsBackground(eventId).catch(e =>
-    console.warn('[computeEmbeddings] Background job failed:', e?.message)
-  ));
 };
 
 export async function findEvent(eventId: string): Promise<EventData | null> {
@@ -436,3 +352,42 @@ export const proxyOneDriveImage = async (req: Request, res: Response) => {
     return res.status(404).json({ error: "Could not stream OneDrive image" });
   }
 };
+
+// ── Face Embedding Storage Endpoint ──────────────────────────────────────────
+
+/**
+ * POST /api/events/:eventId/compute-embeddings
+ * Accepts pre-computed face descriptors from the admin panel and stores them.
+ * The admin browser runs face-api.js to extract descriptors per photo and sends
+ * them here to be persisted in MongoDB for Vercel-compatible JS matching.
+ */
+export const computeEmbeddings = async (req: Request, res: Response) => {
+  const { eventId } = req.params;
+  const { descriptors } = req.body; // { descriptors: [{name, thumbUrl, descriptors: number[][]}] }
+  const event = await findEvent(eventId);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+
+  if (descriptors && Array.isArray(descriptors) && descriptors.length > 0) {
+    event.faceDescriptors = descriptors;
+    if (isDbConnected()) {
+      try {
+        await EventModel.findOneAndUpdate(
+          { eventId },
+          { $set: { faceDescriptors: descriptors } }
+        ).exec();
+        console.log(`[embeddings] Stored ${descriptors.length} descriptor entries for event ${eventId}`);
+      } catch (e: any) {
+        console.warn('[embeddings] Failed to save to MongoDB:', e?.message);
+      }
+    }
+    return res.json({ success: true, count: descriptors.length, message: `Stored ${descriptors.length} face descriptors for event ${eventId}.` });
+  }
+
+  // No descriptors sent — just check status
+  return res.json({
+    success: true,
+    count: event.faceDescriptors?.length || 0,
+    message: `Event ${eventId} has ${event.faceDescriptors?.length || 0} photos with pre-computed face descriptors.`
+  });
+};
+
