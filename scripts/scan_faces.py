@@ -376,25 +376,20 @@ def cosine_similarity(a, b):
 #  Main Face Matching Engine  (SFace + OpenCV ONLY)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Strict thresholds — tuned for SFace to MINIMIZE false positives
-# SFace cosine: same person typically > 0.55, different person < 0.40
-# SFace L2:     same person typically < 1.05, different person > 1.30
-COSINE_HIGH    = 0.55    # very confident: clearly the same person
-COSINE_MEDIUM  = 0.48    # confident: same person at different angle/lighting
-L2_HIGH        = 1.05    # L2 must also confirm for high confidence
-L2_MEDIUM      = 1.15    # L2 upper bound for medium confidence
+# SFace thresholds calibrated for high accuracy:
+# Official OpenCV benchmark: Cosine threshold = 0.363, L2 threshold = 1.128
+COSINE_HIGH    = 0.45    # Clear, high-confidence match
+COSINE_MEDIUM  = 0.363   # Confident match across different angles/expressions
+L2_MAX         = 1.128   # L2 distance limit for same person
 
 def match_faces(selfie_path, image_paths):
     """
-    Pure SFace + OpenCV face matching engine — STRICT accuracy mode.
-    
-    Strategy:
-    1. Extract PRIMARY selfie embedding only (single canonical face)
-    2. For each candidate image, extract ALL face embeddings
-    3. Use DUAL-METRIC verification: both cosine AND L2 must agree
-    4. Only return matches where both metrics confirm the identity
+    High-accuracy SFace + OpenCV face matching engine.
+    - Multi-representation selfie extraction (original + CLAHE-enhanced + flipped)
+    - Full face comparison across all candidate faces
+    - Dual metric validation (Cosine similarity + L2 norm distance)
     """
-    sys.stderr.write(f"[SFace Engine] Starting STRICT face matching across {len(image_paths)} images…\n")
+    sys.stderr.write(f"[SFace Engine] Starting accurate face matching across {len(image_paths)} images…\n")
     start_time = time.time()
 
     recognizer = get_sface_recognizer()
@@ -402,36 +397,29 @@ def match_faces(selfie_path, image_paths):
         sys.stderr.write("[SFace Engine] ERROR: Could not initialize SFace recognizer\n")
         return []
 
-    # Step 1: Extract PRIMARY selfie face embedding ONLY
     selfie_img = cv2.imread(selfie_path)
     if selfie_img is None:
         sys.stderr.write(f"[SFace Engine] ERROR: Could not read selfie at {selfie_path}\n")
         return []
 
-    h, w = selfie_img.shape[:2]
-    detector = get_yunet_detector(w, h)
-    if detector is None:
-        sys.stderr.write("[SFace Engine] ERROR: Could not initialize face detector\n")
+    # Multi-variant selfie features for invariant recognition
+    selfie_feats = extract_selfie_features(selfie_img, recognizer)
+    if not selfie_feats:
+        h, w = selfie_img.shape[:2]
+        det = get_yunet_detector(w, h)
+        if det:
+            _, s_faces = det.detect(selfie_img)
+            if s_faces is not None and len(s_faces) > 0:
+                s_faces_sorted = sorted(s_faces, key=lambda f: f[2] * f[3], reverse=True)
+                aligned = recognizer.alignCrop(selfie_img, s_faces_sorted[0])
+                selfie_feats = [recognizer.feature(aligned)]
+
+    if not selfie_feats:
+        sys.stderr.write("[SFace Engine] ERROR: No face detected in selfie\n")
         return []
 
-    _, selfie_faces = detector.detect(selfie_img)
-    if selfie_faces is None or len(selfie_faces) == 0:
-        # Try enhanced
-        enhanced = enhance_image(selfie_img)
-        _, selfie_faces = detector.detect(enhanced)
-        if selfie_faces is None or len(selfie_faces) == 0:
-            sys.stderr.write("[SFace Engine] ERROR: No face detected in selfie\n")
-            return []
+    sys.stderr.write(f"[SFace Engine] Extracted {len(selfie_feats)} selfie feature vectors for multi-angle matching\n")
 
-    # Use largest face from selfie (most prominent)
-    selfie_faces_sorted = sorted(selfie_faces, key=lambda f: f[2] * f[3], reverse=True)
-    selfie_face = selfie_faces_sorted[0]
-    selfie_aligned = recognizer.alignCrop(selfie_img, selfie_face)
-    selfie_feat = recognizer.feature(selfie_aligned)
-
-    sys.stderr.write(f"[SFace Engine] Extracted 1 primary selfie embedding (strict mode)\n")
-
-    # Step 2: Match against each candidate image
     matched_images = []
 
     for idx, img_path in enumerate(image_paths):
@@ -457,24 +445,24 @@ def match_faces(selfie_path, image_paths):
                 # Cache the embeddings
                 save_cached_faces(img_path, target_feats, mtime)
 
-            # Step 3: DUAL-METRIC matching — both cosine AND L2 must agree
+            # Step 3: DUAL-METRIC matching across all selfie variants
             best_cosine = -1.0
             best_l2 = 999.0
 
-            for t_feat in target_feats:
-                cos_score = cosine_similarity(selfie_feat, t_feat)
-                l2_score = float(recognizer.match(selfie_feat, t_feat, cv2.FaceRecognizerSF_FR_NORM_L2))
+            for s_feat in selfie_feats:
+                for t_feat in target_feats:
+                    cos_score = cosine_similarity(s_feat, t_feat)
+                    l2_score = float(recognizer.match(s_feat, t_feat, cv2.FaceRecognizerSF_FR_NORM_L2))
 
-                # Track best pair
-                if cos_score > best_cosine:
-                    best_cosine = cos_score
-                    best_l2 = l2_score
+                    if cos_score > best_cosine:
+                        best_cosine = cos_score
+                        best_l2 = l2_score
 
-            # Step 4: STRICT dual-threshold decision
+            # Step 4: Calibrated dual-threshold decision
             confidence = None
-            if best_cosine >= COSINE_HIGH and best_l2 <= L2_HIGH:
+            if best_cosine >= COSINE_HIGH and best_l2 <= 1.10:
                 confidence = "high"
-            elif best_cosine >= COSINE_MEDIUM and best_l2 <= L2_MEDIUM:
+            elif best_cosine >= COSINE_MEDIUM and best_l2 <= L2_MAX:
                 confidence = "medium"
 
             if confidence:

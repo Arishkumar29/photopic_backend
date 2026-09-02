@@ -73,30 +73,40 @@ export const scanFaces = async (req: Request, res: Response) => {
       ? event.driveFiles
       : (event.photos || []).map((p, idx) => ({ id: `p_${idx}`, name: path.basename(p), thumbUrl: p }));
 
-    // If running in local / server environment with Python, try Python SFace
+    let scanBulkDir = getBulkPhotoDir(eventId);
     let pythonMatched = false;
     let matchedUrls: string[] = [];
 
-    if (!process.env.VERCEL) {
-      try {
-        const uniqueId = crypto.randomBytes(8).toString("hex");
-        scanTempDir = path.join(os.tmpdir(), `potopic_scan_${uniqueId}`);
-        ensureDirExists(scanTempDir);
-        tempSelfiePath = path.join(scanTempDir, `selfie.${ext}`);
-        fs.writeFileSync(tempSelfiePath, Buffer.from(base64Data, 'base64'));
+    // Check if python is available
+    try {
+      const uniqueId = crypto.randomBytes(8).toString("hex");
+      scanTempDir = path.join(os.tmpdir(), `potopic_scan_${uniqueId}`);
+      ensureDirExists(scanTempDir);
+      tempSelfiePath = path.join(scanTempDir, `selfie.${ext}`);
+      fs.writeFileSync(tempSelfiePath, Buffer.from(base64Data, 'base64'));
 
-        let scanBulkDir = getBulkPhotoDir(eventId);
-        if (event.folderId !== 'local_upload') {
-          ensureDirExists(scanBulkDir);
-          const driveFiles = event.driveFiles || [];
-          const batchSize = 6;
-          for (let i = 0; i < Math.min(driveFiles.length, 30); i += batchSize) {
-            const batch = driveFiles.slice(i, i + batchSize);
+      ensureDirExists(scanBulkDir);
+      const driveFiles = event.driveFiles || [];
+
+      // Download any missing event files into cache if not already present
+      if (driveFiles.length > 0) {
+        const existingFiles = new Set(fs.readdirSync(scanBulkDir));
+        const missing = driveFiles.filter(f => !existingFiles.has(f.name));
+
+        if (missing.length > 0) {
+          console.log(`[scanController] Downloading ${missing.length} missing photos for scanning...`);
+          const batchSize = 12;
+          for (let i = 0; i < missing.length; i += batchSize) {
+            const batch = missing.slice(i, i + batchSize);
             await Promise.all(
               batch.map(async (file) => {
                 const destPath = path.join(scanBulkDir, file.name);
-                if (fs.existsSync(destPath)) return;
-                const downloadUrl = file.thumbUrl.replace(/=s\d+$/, "=s768");
+                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 100) return;
+
+                let downloadUrl = file.thumbUrl;
+                if (downloadUrl.includes("googleusercontent.com")) {
+                  downloadUrl = downloadUrl.replace(/=s\d+$/, "=s768");
+                }
                 try {
                   const fileRes = await fetch(downloadUrl, {
                     headers: { "User-Agent": "Mozilla/5.0" }
@@ -110,52 +120,40 @@ export const scanFaces = async (req: Request, res: Response) => {
             );
           }
         }
-
-        const result = await runPythonScan(tempSelfiePath, scanBulkDir);
-        if (result && !result.error && Array.isArray(result.matches)) {
-          matchedUrls = result.matches.map((m: any) => {
-            const matchFile = event.driveFiles?.find(f => f.name === m.name);
-            if (matchFile?.thumbUrl) return matchFile.thumbUrl;
-            if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
-            return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
-          }).filter(Boolean) as string[];
-          pythonMatched = true;
-        }
-      } catch (err: any) {
-        console.warn("[scanController] Python scan failed or unavailable, falling back to smart cloud matcher:", err?.message || err);
       }
-    }
 
-    // Serverless / Cloud Smart Matcher Fallback
-    if (!pythonMatched) {
-      if (allCloudFiles.length > 0) {
-        const hash = crypto.createHash("sha256").update(base64Data.slice(0, 800)).digest();
-        const seed = hash.readUInt32BE(0);
-        const count = Math.min(allCloudFiles.length, Math.max(3, (seed % 6) + 4));
-        const selected: typeof allCloudFiles = [];
-        const step = Math.max(1, Math.floor(allCloudFiles.length / count));
-
-        for (let i = 0; i < count; i++) {
-          const idx = (seed + i * step) % allCloudFiles.length;
-          const candidate = allCloudFiles[idx];
-          if (!selected.includes(candidate)) {
-            selected.push(candidate);
-          }
-        }
-
-        matchedUrls = selected.map(f => {
-          if (f.thumbUrl) return f.thumbUrl;
-          if (f.id) return `/api/drive-proxy/${encodeURIComponent(f.id)}`;
-          return null;
+      console.log(`[scanController] Running OpenCV SFace scan for event ${eventId} (${fs.readdirSync(scanBulkDir).length} photos)...`);
+      const result = await runPythonScan(tempSelfiePath, scanBulkDir);
+      if (result && !result.error && Array.isArray(result.matches)) {
+        matchedUrls = result.matches.map((m: any) => {
+          const matchFile = event.driveFiles?.find(f => f.name === m.name);
+          if (matchFile?.thumbUrl) return matchFile.thumbUrl;
+          if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
+          return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
         }).filter(Boolean) as string[];
+        pythonMatched = true;
       }
+    } catch (err: any) {
+      console.warn("[scanController] Python scan not available:", err?.message || err);
     }
 
     if (scanTempDir && fs.existsSync(scanTempDir)) {
       try { removeDirSync(scanTempDir); } catch (e) {}
     }
 
-    return res.json({ matches: matchedUrls, engine: pythonMatched ? "opencv-sface" : "cloud-smart-biometrics" });
+    if (pythonMatched) {
+      return res.json({ 
+        matches: matchedUrls, 
+        count: matchedUrls.length,
+        engine: "opencv-sface-biometrics" 
+      });
+    }
+
+    // Fallback if Python is unavailable on this host
+    return res.status(503).json({
+      error: "Face recognition engine is not running on this server. Please start the backend with Python to enable accurate biometrics.",
+      matches: []
+    });
   } catch (error: any) {
     console.error("Scan error:", error);
     if (scanTempDir && fs.existsSync(scanTempDir)) {
