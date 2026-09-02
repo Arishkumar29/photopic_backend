@@ -42,3 +42,33 @@ export function runPythonScan(selfiePath: string, bulkDirPath: string): Promise<
     });
   });
 }
+
+export function runPythonSelfieVector(selfiePath: string): Promise<Float32Array | null> {
+  return new Promise((resolve) => {
+    const scriptPath = resolveScriptPath("extract_selfie_vector.py");
+    const py = spawn("python", [scriptPath, selfiePath]);
+    let stdoutData = "";
+
+    py.stdout.on("data", (data) => {
+      stdoutData += data.toString();
+    });
+
+    py.on("close", (code) => {
+      if (code === 0) {
+        try {
+          const lines = stdoutData.trim().split("\n");
+          const lastLine = lines[lines.length - 1];
+          const parsed = JSON.parse(lastLine);
+          if (parsed.success && Array.isArray(parsed.vector)) {
+            return resolve(new Float32Array(parsed.vector));
+          }
+        } catch (e) {}
+      }
+      resolve(null);
+    });
+
+    py.on("error", () => {
+      resolve(null);
+    });
+  });
+}

@@ -6,7 +6,7 @@ import os from "os";
 import { events, findEvent } from "./eventController.js";
 import { initAnalytics, eventAnalytics } from "./analyticsController.js";
 import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
-import { runPythonScan } from "../services/faceScanService.js";
+import { runPythonScan, runPythonSelfieVector } from "../services/faceScanService.js";
 import { matchDescriptor } from "../services/faceEmbeddingService.js";
 import { extractSFaceVector, matchSFaceAgainstSqlite } from "../services/sfaceMatcherService.js";
 
@@ -134,11 +134,10 @@ export const scanFaces = async (req: Request, res: Response) => {
           console.warn("[scanController] Python scan not available:", err?.message || err);
         }
 
-        if (scanTempDir && fs.existsSync(scanTempDir)) {
-          try { removeDirSync(scanTempDir); } catch (e) {}
-        }
-
         if (pythonMatched) {
+          if (scanTempDir && fs.existsSync(scanTempDir)) {
+            try { removeDirSync(scanTempDir); } catch (e) {}
+          }
           return res.json({
             matches: matchedUrls,
             count: matchedUrls.length,
@@ -146,16 +145,33 @@ export const scanFaces = async (req: Request, res: Response) => {
           });
         }
 
-        // ─── SECONDARY PATH: Pure Node.js SFace Biometrics (Works on Vercel) ──
+        // ─── SECONDARY PATH: SFace Biometrics (YuNet Aligned + Precision 0.44) ──
         try {
-          const selfieBuffer = Buffer.from(base64Data, "base64");
-          const isPng = mimeType.includes("png");
-          const selfieVec = await extractSFaceVector(selfieBuffer, isPng);
+          let selfieVec: Float32Array | null = null;
+
+          // 1. Try YuNet face detection & alignment first
+          if (tempSelfiePath && fs.existsSync(tempSelfiePath)) {
+            try {
+              selfieVec = await runPythonSelfieVector(tempSelfiePath);
+              if (selfieVec) {
+                console.log("[scanController] Extracted YuNet-aligned SFace vector");
+              }
+            } catch (e) {}
+          }
+
+          // 2. Pure Node.js fallback if Python is unavailable
+          if (!selfieVec) {
+            const selfieBuffer = Buffer.from(base64Data, "base64");
+            const isPng = mimeType.includes("png");
+            selfieVec = await extractSFaceVector(selfieBuffer, isPng);
+          }
+
           const validFileNames = (event.driveFiles || []).map(f => f.name);
-          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.33, validFileNames);
+          // Set precision threshold to 0.44 to eliminate false positives
+          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.44, validFileNames);
 
           if (nodeMatches.length > 0) {
-            console.log(`[scanController] Pure Node.js SFace matched ${nodeMatches.length} photos!`);
+            console.log(`[scanController] Precision SFace matched ${nodeMatches.length} photos!`);
             const matchedUrls = nodeMatches.map((m) => {
               const diskPath = path.join(scanBulkDir, m.name);
               if (fs.existsSync(diskPath)) {
@@ -170,11 +186,11 @@ export const scanFaces = async (req: Request, res: Response) => {
             return res.json({
               matches: matchedUrls,
               count: matchedUrls.length,
-              engine: "sface-node-biometrics",
+              engine: "sface-precision-biometrics",
             });
           }
         } catch (jsErr: any) {
-          console.warn("[scanController] Pure Node.js SFace matching error:", jsErr?.message || jsErr);
+          console.warn("[scanController] Precision SFace matching error:", jsErr?.message || jsErr);
         }
 
         // Return empty matches when no genuine biometric resemblance is found
