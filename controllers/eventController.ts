@@ -180,7 +180,7 @@ export const createEvent = async (req: Request, res: Response) => {
   }
 };
 
-async function findEvent(eventId: string): Promise<EventData | null> {
+export async function findEvent(eventId: string): Promise<EventData | null> {
   if (events[eventId]) return events[eventId];
   if (isDbConnected()) {
     try {
