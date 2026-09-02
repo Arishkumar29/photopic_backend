@@ -79,7 +79,7 @@ export interface VectorMatch {
  * Match a 128-d selfie vector against all pre-computed face embeddings in SQLite for this event.
  * Runs in under 50ms using vectorized cosine similarity.
  */
-export function matchSFaceAgainstSqlite(selfieVec: Float32Array, eventId: string, minCosine = 0.38): VectorMatch[] {
+export function matchSFaceAgainstSqlite(selfieVec: Float32Array, eventId: string, minCosine = 0.33): VectorMatch[] {
   const projectRoot = getProjectRootDir();
   const sqlitePath = path.join(projectRoot, "backend", "models", "face_embeddings.sqlite");
 

@@ -111,37 +111,6 @@ export const scanFaces = async (req: Request, res: Response) => {
           fs.writeFileSync(tempSelfiePath, Buffer.from(base64Data, 'base64'));
 
           ensureDirExists(scanBulkDir);
-          const driveFiles = event.driveFiles || [];
-
-          if (driveFiles.length > 0) {
-            const existingFiles = new Set(fs.readdirSync(scanBulkDir));
-            const missing = driveFiles.filter(f => !existingFiles.has(f.name));
-
-            if (missing.length > 0) {
-              console.log(`[scanController] Downloading ${missing.length} missing photos for scanning...`);
-              const batchSize = 12;
-              for (let i = 0; i < missing.length; i += batchSize) {
-                const batch = missing.slice(i, i + batchSize);
-                await Promise.all(
-                  batch.map(async (file) => {
-                    const destPath = path.join(scanBulkDir, file.name);
-                    if (fs.existsSync(destPath) && fs.statSync(destPath).size > 100) return;
-                    let downloadUrl = file.thumbUrl;
-                    if (downloadUrl.includes("googleusercontent.com")) {
-                      downloadUrl = downloadUrl.replace(/=s\d+$/, "=s768");
-                    }
-                    try {
-                      const fileRes = await fetch(downloadUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
-                      if (fileRes.ok) {
-                        const buf = Buffer.from(await fileRes.arrayBuffer());
-                        fs.writeFileSync(destPath, buf);
-                      }
-                    } catch (e) {}
-                  })
-                );
-              }
-            }
-          }
 
           console.log(`[scanController] Running OpenCV SFace scan (${fs.readdirSync(scanBulkDir).length} photos)...`);
           const result = await runPythonScan(tempSelfiePath, scanBulkDir);
@@ -179,7 +148,7 @@ export const scanFaces = async (req: Request, res: Response) => {
           const selfieBuffer = Buffer.from(base64Data, "base64");
           const isPng = mimeType.includes("png");
           const selfieVec = await extractSFaceVector(selfieBuffer, isPng);
-          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.40);
+          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.33);
 
           if (nodeMatches.length > 0) {
             console.log(`[scanController] Pure Node.js SFace matched ${nodeMatches.length} photos!`);

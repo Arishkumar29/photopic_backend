@@ -380,8 +380,8 @@ def cosine_similarity(a, b):
 # SFace thresholds calibrated for high accuracy:
 # Official OpenCV benchmark: Cosine threshold = 0.363, L2 threshold = 1.128
 COSINE_HIGH    = 0.45    # Clear, high-confidence match
-COSINE_MEDIUM  = 0.363   # Confident match across different angles/expressions
-L2_MAX         = 1.128   # L2 distance limit for same person
+COSINE_MEDIUM  = 0.33    # Confident match across different angles/expressions/lighting
+L2_MAX         = 1.18    # L2 distance limit for same person
 
 def match_faces(selfie_path, image_paths):
     """
