@@ -7,7 +7,8 @@ import { events, findEvent } from "./eventController.js";
 import { initAnalytics, eventAnalytics } from "./analyticsController.js";
 import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
 import { runPythonScan } from "../services/faceScanService.js";
-import { matchDescriptor, extractDescriptorsFromBuffer } from "../services/faceEmbeddingService.js";
+import { matchDescriptor } from "../services/faceEmbeddingService.js";
+import { extractSFaceVector, matchSFaceAgainstSqlite } from "../services/sfaceMatcherService.js";
 
 const scanRateLimit = new Map<string, { count: number; resetTime: number }>();
 
@@ -152,7 +153,7 @@ export const scanFaces = async (req: Request, res: Response) => {
               }
               const matchFile = event!.driveFiles?.find(f => f.name === m.name);
               if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
-              if (matchFile?.thumbUrl) return matchFile.thumbUrl;
+              if (matchFile?.thumbUrl) return matchFile.thumbUrl.replace(/=s\d+$/, "=s1600");
               return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
             }).filter(Boolean) as string[];
             pythonMatched = true;
@@ -173,39 +174,42 @@ export const scanFaces = async (req: Request, res: Response) => {
           });
         }
 
-        // ─── FALLBACK: JS server-side extraction from raw selfie image ────────
-        // Extract descriptor from the base64 selfie right here on the server
-        // using face-api.js (works on Vercel, but no pre-computed event embeddings).
+        // ─── SECONDARY PATH: Pure Node.js SFace Biometrics (Works on Vercel) ──
         try {
-          const selfieBuffer = Buffer.from(base64Data, 'base64');
-          const selfieDescs = await extractDescriptorsFromBuffer(selfieBuffer);
-          if (selfieDescs.length > 0 && (event.faceDescriptors?.length ?? 0) > 0) {
-            const bestSelfieDesc = selfieDescs[0];
-            const matches = matchDescriptor(bestSelfieDesc, event.faceDescriptors!);
-            if (matches.length > 0) {
-              return res.json({
-                matches: matches.map(m => m.thumbUrl),
-                count: matches.length,
-                engine: "faceapi-js-server-fallback",
-              });
-            }
+          const selfieBuffer = Buffer.from(base64Data, "base64");
+          const isPng = mimeType.includes("png");
+          const selfieVec = await extractSFaceVector(selfieBuffer, isPng);
+          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.40);
+
+          if (nodeMatches.length > 0) {
+            console.log(`[scanController] Pure Node.js SFace matched ${nodeMatches.length} photos!`);
+            const matchedUrls = nodeMatches.map((m) => {
+              const diskPath = path.join(scanBulkDir, m.name);
+              if (fs.existsSync(diskPath)) {
+                return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+              }
+              const matchFile = event!.driveFiles?.find(f => f.name === m.name);
+              if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
+              if (matchFile?.thumbUrl) return matchFile.thumbUrl.replace(/=s\d+$/, "=s1600");
+              return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+            }).filter(Boolean) as string[];
+
+            return res.json({
+              matches: matchedUrls,
+              count: matchedUrls.length,
+              engine: "sface-node-biometrics",
+            });
           }
         } catch (jsErr: any) {
-          console.warn("[scanController] JS server-side extraction failed:", jsErr?.message);
+          console.warn("[scanController] Pure Node.js SFace matching error:", jsErr?.message || jsErr);
         }
 
-        // ─── LAST RESORT: Return event photos so attendee sees something ─────
-        const candidateUrls = allCloudFiles.map(f => {
-          if (f.thumbUrl) return f.thumbUrl;
-          if (f.id) return `/api/drive-proxy/${encodeURIComponent(f.id)}`;
-          return null;
-        }).filter(Boolean) as string[];
-
+        // Return empty matches when no genuine biometric resemblance is found
         return res.json({
-          matches: candidateUrls.slice(0, 60),
-          count: Math.min(candidateUrls.length, 60),
-          engine: "cloud-stream-fallback",
-          notice: "Face embeddings not yet computed for this event. Admin should re-sync to enable accurate matching.",
+          matches: [],
+          count: 0,
+          engine: "sface-biometrics-zero-match",
+          notice: "No matching photos found for this face in the event gallery.",
         });
       }
     }
