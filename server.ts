@@ -47,8 +47,195 @@ app.use(async (req, res, next) => {
 
 app.use(express.json({ limit: "50mb" }));
 
-// ── Root Health Check ────────────────────────────────────────────────
+// ── Root Handler & Status Page ──────────────────────────────────────────
 app.get("/", (req, res) => {
+  const acceptsHtml = req.headers.accept?.includes("text/html");
+  if (acceptsHtml) {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GWC PhotoPic — Cloud Backend API</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at 15% 15%, rgba(110, 43, 139, 0.25) 0%, transparent 45%),
+                  radial-gradient(circle at 85% 85%, rgba(218, 119, 86, 0.2) 0%, transparent 45%),
+                  #0a0714;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(20px);
+      border-radius: 28px;
+      padding: 44px 36px;
+      max-width: 640px;
+      width: 100%;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(34, 197, 94, 0.12);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      color: #4ade80;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      margin-bottom: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 10px #22c55e;
+    }
+    h1 {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    p.subtitle {
+      color: #94a3b8;
+      font-size: 15px;
+      line-height: 1.6;
+      margin-bottom: 32px;
+    }
+    .btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 580px) {
+      .btn-grid { grid-template-columns: 1fr; }
+    }
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 16px 20px;
+      border-radius: 18px;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #6e2b8b 0%, #da7756 100%);
+      color: #ffffff;
+      box-shadow: 0 10px 25px -5px rgba(110, 43, 139, 0.4);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 15px 30px -5px rgba(110, 43, 139, 0.6);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #e2e8f0;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      transform: translateY(-2px);
+    }
+    .endpoints {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 16px;
+      padding: 16px;
+      text-align: left;
+    }
+    .endpoints-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      margin-bottom: 10px;
+    }
+    .endpoints-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .ep-badge {
+      background: rgba(110, 43, 139, 0.2);
+      border: 1px solid rgba(110, 43, 139, 0.3);
+      color: #c084fc;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 8px;
+      text-decoration: none;
+    }
+    .ep-badge:hover {
+      background: rgba(110, 43, 139, 0.4);
+    }
+    footer {
+      margin-top: 24px;
+      color: #64748b;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">
+      <span class="badge-dot"></span> PhotoPic Cloud API Live
+    </div>
+    <h1>PhotoPic Backend Engine</h1>
+    <p class="subtitle">
+      The serverless API is online and powering real-time face matching, OneDrive/Google Drive sync, and biometric search.
+    </p>
+
+    <div class="btn-grid">
+      <a href="https://photopic-admin.vercel.app" target="_blank" class="btn btn-primary">
+        🚀 Launch Admin Portal
+      </a>
+      <a href="https://photopic-frontend.vercel.app" target="_blank" class="btn btn-secondary">
+        📱 Launch Guest Experience
+      </a>
+    </div>
+
+    <div class="endpoints">
+      <div class="endpoints-title">Active API Endpoints</div>
+      <div class="endpoints-list">
+        <a href="/api/events" class="ep-badge">GET /api/events</a>
+        <a href="/api/health" class="ep-badge">GET /api/health</a>
+        <a href="/api/analytics" class="ep-badge">GET /api/analytics</a>
+      </div>
+    </div>
+  </div>
+  <footer>GWC PhotoPic Engine • OpenCV SFace 512-d Biometrics • Vercel Serverless</footer>
+</body>
+</html>`);
+  }
+
   res.json({
     status: "ok",
     service: "GWC PhotoPic Backend API",
