@@ -1,6 +1,6 @@
 import path from "path";
 import { spawn } from "child_process";
-import { getProjectRootDir } from "./storageService.js";
+import { getProjectRootDir, resolveScriptPath } from "./storageService.js";
 
 export interface ScanMatch {
   name: string;
@@ -10,8 +10,7 @@ export interface ScanMatch {
 
 export function runPythonScan(selfiePath: string, bulkDirPath: string): Promise<any> {
   return new Promise((resolve, reject) => {
-    const projectRoot = getProjectRootDir();
-    const scriptPath = path.join(projectRoot, "backend", "scripts", "scan_faces.py");
+    const scriptPath = resolveScriptPath("scan_faces.py");
     const pythonProcess = spawn("python", [scriptPath, selfiePath, bulkDirPath]);
 
     let stdoutData = "";

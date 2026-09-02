@@ -15,6 +15,32 @@ export const getProjectRootDir = (): string => {
   return process.cwd();
 };
 
+export const resolveModelPath = (filename: string): string => {
+  const candidates = [
+    path.join(process.cwd(), "models", filename),
+    path.join(process.cwd(), "backend", "models", filename),
+    path.join(getProjectRootDir(), "backend", "models", filename),
+    path.join(getProjectRootDir(), "models", filename),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(process.cwd(), "models", filename);
+};
+
+export const resolveScriptPath = (filename: string): string => {
+  const candidates = [
+    path.join(process.cwd(), "scripts", filename),
+    path.join(process.cwd(), "backend", "scripts", filename),
+    path.join(getProjectRootDir(), "backend", "scripts", filename),
+    path.join(getProjectRootDir(), "scripts", filename),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(process.cwd(), "scripts", filename);
+};
+
 export const getBulkPhotoDir = (subPath: string = ""): string => {
   const base = process.env.VERCEL ? os.tmpdir() : getProjectRootDir();
   return path.join(base, "bulk_photo", subPath);

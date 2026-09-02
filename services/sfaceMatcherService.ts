@@ -4,14 +4,13 @@ import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 import ort from "onnxruntime-node";
 import sqlite from "node:sqlite";
-import { getProjectRootDir, getBulkPhotoDir } from "./storageService.js";
+import { getProjectRootDir, getBulkPhotoDir, resolveModelPath } from "./storageService.js";
 
 let _session: ort.InferenceSession | null = null;
 
 async function getSession(): Promise<ort.InferenceSession> {
   if (!_session) {
-    const projectRoot = getProjectRootDir();
-    const modelPath = path.join(projectRoot, "backend", "models", "face_recognition_sface_2021dec.onnx");
+    const modelPath = resolveModelPath("face_recognition_sface_2021dec.onnx");
     _session = await ort.InferenceSession.create(modelPath);
   }
   return _session;
@@ -80,8 +79,7 @@ export interface VectorMatch {
  * Runs in under 50ms using vectorized cosine similarity.
  */
 export function matchSFaceAgainstSqlite(selfieVec: Float32Array, eventId: string, minCosine = 0.33): VectorMatch[] {
-  const projectRoot = getProjectRootDir();
-  const sqlitePath = path.join(projectRoot, "backend", "models", "face_embeddings.sqlite");
+  const sqlitePath = resolveModelPath("face_embeddings.sqlite");
 
   if (!fs.existsSync(sqlitePath)) {
     console.warn("[sfaceMatcher] face_embeddings.sqlite not found at:", sqlitePath);
