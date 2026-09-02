@@ -2,13 +2,15 @@ import fs from "fs";
 import path from "path";
 import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
-import ort from "onnxruntime-node";
+import * as ortModule from "onnxruntime-node";
 import sqlite from "node:sqlite";
 import { getProjectRootDir, getBulkPhotoDir, resolveModelPath } from "./storageService.js";
 
-let _session: ort.InferenceSession | null = null;
+const ort: any = (ortModule as any).default || ortModule;
 
-async function getSession(): Promise<ort.InferenceSession> {
+let _session: any = null;
+
+async function getSession(): Promise<any> {
   if (!_session) {
     const modelPath = resolveModelPath("face_recognition_sface_2021dec.onnx");
     _session = await ort.InferenceSession.create(modelPath);
@@ -78,7 +80,12 @@ export interface VectorMatch {
  * Match a 128-d selfie vector against all pre-computed face embeddings in SQLite for this event.
  * Runs in under 50ms using vectorized cosine similarity.
  */
-export function matchSFaceAgainstSqlite(selfieVec: Float32Array, eventId: string, minCosine = 0.33): VectorMatch[] {
+export function matchSFaceAgainstSqlite(
+  selfieVec: Float32Array,
+  eventId: string,
+  minCosine = 0.33,
+  validFileNames?: string[]
+): VectorMatch[] {
   const sqlitePath = resolveModelPath("face_embeddings.sqlite");
 
   if (!fs.existsSync(sqlitePath)) {
@@ -95,16 +102,24 @@ export function matchSFaceAgainstSqlite(selfieVec: Float32Array, eventId: string
   if (selfieNorm === 0) return [];
 
   const db = new (sqlite as any).DatabaseSync(sqlitePath, { open: true, readOnly: true });
-  // Match any file path containing this eventId
-  const stmt = db.prepare("SELECT file_path, feat_blob FROM face_cache WHERE file_path LIKE ?");
-  const rows = stmt.all(`%${eventId}%`) as { file_path: string; feat_blob: Buffer }[];
+
+  const validNamesSet = validFileNames && validFileNames.length > 0 ? new Set(validFileNames) : null;
+
+  let rows: { file_path: string; feat_blob: Buffer }[];
+  if (validNamesSet && validNamesSet.size > 0) {
+    const stmt = db.prepare("SELECT file_path, feat_blob FROM face_cache");
+    rows = stmt.all() as { file_path: string; feat_blob: Buffer }[];
+  } else {
+    const stmt = db.prepare("SELECT file_path, feat_blob FROM face_cache WHERE file_path LIKE ?");
+    rows = stmt.all(`%${eventId}%`) as { file_path: string; feat_blob: Buffer }[];
+  }
 
   const photoScores: Record<string, number> = {};
 
   for (const row of rows) {
-    const rawPath = row.file_path.replace(/\\/g, "/");
-    const fname = rawPath.split("/").pop() || "";
+    const fname = path.win32.basename(row.file_path);
     if (!fname) continue;
+    if (validNamesSet && !validNamesSet.has(fname)) continue;
 
     const blob = row.feat_blob;
     if (blob.length < 512) continue; // 128 * 4 bytes

@@ -112,20 +112,23 @@ export const scanFaces = async (req: Request, res: Response) => {
 
           ensureDirExists(scanBulkDir);
 
-          console.log(`[scanController] Running OpenCV SFace scan (${fs.readdirSync(scanBulkDir).length} photos)...`);
-          const result = await runPythonScan(tempSelfiePath, scanBulkDir);
-          if (result && !result.error && Array.isArray(result.matches)) {
-            matchedUrls = result.matches.map((m: any) => {
-              const diskPath = path.join(scanBulkDir, m.name);
-              if (fs.existsSync(diskPath)) {
+          const bulkFiles = fs.readdirSync(scanBulkDir);
+          if (bulkFiles.length > 0) {
+            console.log(`[scanController] Running OpenCV SFace scan (${bulkFiles.length} photos)...`);
+            const result = await runPythonScan(tempSelfiePath, scanBulkDir);
+            if (result && !result.error && Array.isArray(result.matches) && result.matches.length > 0) {
+              matchedUrls = result.matches.map((m: any) => {
+                const diskPath = path.join(scanBulkDir, m.name);
+                if (fs.existsSync(diskPath)) {
+                  return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+                }
+                const matchFile = event!.driveFiles?.find(f => f.name === m.name);
+                if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
+                if (matchFile?.thumbUrl) return matchFile.thumbUrl.replace(/=s\d+$/, "=s1600");
                 return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
-              }
-              const matchFile = event!.driveFiles?.find(f => f.name === m.name);
-              if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
-              if (matchFile?.thumbUrl) return matchFile.thumbUrl.replace(/=s\d+$/, "=s1600");
-              return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
-            }).filter(Boolean) as string[];
-            pythonMatched = true;
+              }).filter(Boolean) as string[];
+              pythonMatched = true;
+            }
           }
         } catch (err: any) {
           console.warn("[scanController] Python scan not available:", err?.message || err);
@@ -148,7 +151,8 @@ export const scanFaces = async (req: Request, res: Response) => {
           const selfieBuffer = Buffer.from(base64Data, "base64");
           const isPng = mimeType.includes("png");
           const selfieVec = await extractSFaceVector(selfieBuffer, isPng);
-          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.33);
+          const validFileNames = (event.driveFiles || []).map(f => f.name);
+          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.33, validFileNames);
 
           if (nodeMatches.length > 0) {
             console.log(`[scanController] Pure Node.js SFace matched ${nodeMatches.length} photos!`);
