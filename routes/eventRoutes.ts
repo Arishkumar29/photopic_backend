@@ -7,7 +7,8 @@ import {
   updateEvent,
   uploadEventPhotos,
   clearEventPhotos,
-  proxyDriveImage
+  proxyDriveImage,
+  proxyOneDriveImage
 } from "../controllers/eventController.js";
 import { getBulkPhotoDir, ensureDirExists } from "../services/storageService.js";
 
@@ -42,5 +43,6 @@ router.delete("/events/:eventId", deleteEvent);
 router.post("/events/:eventId/upload", upload.array("photos"), uploadEventPhotos);
 router.post("/events/:eventId/clear", clearEventPhotos);
 router.get("/drive-proxy/:fileId", proxyDriveImage);
+router.get("/onedrive-proxy/:fileId?", proxyOneDriveImage);
 
 export default router;
