@@ -38,7 +38,7 @@ export const scanFaces = async (req: Request, res: Response) => {
   let scanTempDir = "";
 
   try {
-    const { eventId, referenceImage, selfieDescriptor } = req.body;
+    const { eventId, referenceImage, selfieDescriptor, croppedFaceImage } = req.body;
 
     if (!eventId || (!referenceImage && !selfieDescriptor)) {
       return res.status(400).json({ error: "Missing required parameters: eventId and referenceImage or selfieDescriptor" });
@@ -159,11 +159,22 @@ export const scanFaces = async (req: Request, res: Response) => {
             } catch (e) {}
           }
 
-          // 2. Pure Node.js fallback if Python is unavailable
+          // 2. Pure Node.js fallback if Python is unavailable (Vercel runtime)
           if (!selfieVec) {
-            const selfieBuffer = Buffer.from(base64Data, "base64");
-            const isPng = mimeType.includes("png");
-            selfieVec = await extractSFaceVector(selfieBuffer, isPng);
+            let faceBase64 = base64Data;
+            let faceIsPng = mimeType.includes("png");
+
+            if (croppedFaceImage && typeof croppedFaceImage === "string") {
+              const cropMatch = croppedFaceImage.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+              if (cropMatch && cropMatch.length === 3) {
+                faceBase64 = cropMatch[2];
+                faceIsPng = cropMatch[1].includes("png");
+                console.log("[scanController] Using client-aligned face crop for Vercel SFace inference");
+              }
+            }
+
+            const selfieBuffer = Buffer.from(faceBase64, "base64");
+            selfieVec = await extractSFaceVector(selfieBuffer, faceIsPng);
           }
 
           const validFileNames = (event.driveFiles || []).map(f => f.name);
