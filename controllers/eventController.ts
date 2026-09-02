@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import path from "path";
 import fs from "fs";
-import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
+import { getBulkPhotoDir, ensureDirExists, removeDirSync, resolveModelPath, getProjectRootDir } from "../services/storageService.js";
 import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/driveService.js";
 import { isOneDriveUrl, scrapeOneDriveFolderEntries, proxyOneDriveFileContent } from "../services/oneDriveService.js";
 import { isDbConnected } from "../services/dbService.js";
@@ -95,15 +95,29 @@ function saveEventsToDisk() {
 }
 
 function loadEventsFromDisk() {
-  try {
-    const dbPath = getDbFilePath();
-    if (fs.existsSync(dbPath)) {
-      const data = fs.readFileSync(dbPath, "utf-8");
-      const loaded = JSON.parse(data);
-      Object.assign(events, loaded);
+  const candidatePaths = [
+    resolveModelPath("events_db.json"),
+    getDbFilePath(),
+    path.join(getProjectRootDir(), "bulk_photo", "events_db.json"),
+    path.join(getProjectRootDir(), "models", "events_db.json"),
+    path.join(process.cwd(), "models", "events_db.json"),
+    path.join(process.cwd(), "bulk_photo", "events_db.json"),
+  ];
+
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const data = fs.readFileSync(p, "utf-8");
+        const loaded = JSON.parse(data);
+        if (loaded && Object.keys(loaded).length > 0) {
+          Object.assign(events, loaded);
+          console.log(`[eventController] Loaded ${Object.keys(loaded).length} events from: ${p}`);
+          break;
+        }
+      }
+    } catch (err) {
+      console.warn(`[eventController] Could not load events from ${p}:`, err);
     }
-  } catch (err) {
-    console.warn("[eventController] Could not load events from disk:", err);
   }
 
   // Seed a sample event if nothing exists
