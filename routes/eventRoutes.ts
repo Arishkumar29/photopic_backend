@@ -8,7 +8,8 @@ import {
   uploadEventPhotos,
   clearEventPhotos,
   proxyDriveImage,
-  proxyOneDriveImage
+  proxyOneDriveImage,
+  computeEmbeddings
 } from "../controllers/eventController.js";
 import { getBulkPhotoDir, ensureDirExists } from "../services/storageService.js";
 
@@ -30,7 +31,7 @@ router.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "GWC PhotoPic Backend",
-    engine: "OpenCV SFace 512-d Biometrics",
+    engine: "face-api.js JS Biometrics + OpenCV SFace (local)",
     uptime: process.uptime(),
     timestamp: Date.now()
   });
@@ -42,6 +43,7 @@ router.put("/events/:eventId", updateEvent);
 router.delete("/events/:eventId", deleteEvent);
 router.post("/events/:eventId/upload", upload.array("photos"), uploadEventPhotos);
 router.post("/events/:eventId/clear", clearEventPhotos);
+router.post("/events/:eventId/compute-embeddings", computeEmbeddings);
 router.get("/drive-proxy/:fileId", proxyDriveImage);
 router.get("/onedrive-proxy/:fileId?", proxyOneDriveImage);
 

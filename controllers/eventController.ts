@@ -6,6 +6,7 @@ import { scrapeDriveFolderEntries, proxyDriveFileContent } from "../services/dri
 import { isOneDriveUrl, scrapeOneDriveFolderEntries, proxyOneDriveFileContent } from "../services/oneDriveService.js";
 import { isDbConnected } from "../services/dbService.js";
 import { EventModel as _EventModel } from "../models/Event.js";
+import { extractDescriptorsFromBuffer } from "../services/faceEmbeddingService.js";
 // Cast to any to avoid mongoose v8 TypeScript overload union incompatibility
 const EventModel = _EventModel as any;
 
@@ -17,6 +18,8 @@ export interface EventData {
   eventName: string;
   photos: string[];
   driveFiles?: { id: string; thumbUrl: string; name: string }[];
+  /** Pre-computed face embeddings (128-d per face) for each photo — Vercel-safe JS matching */
+  faceDescriptors?: { name: string; thumbUrl: string; descriptors: number[][] }[];
   coverImage?: string;
   description?: string;
   eventLocation?: string;
@@ -37,17 +40,18 @@ function syncToMemory(doc: any) {
   }
 
   const plain: EventData = {
-    eventId:       doc.eventId,
-    folderId:      doc.folderId,
-    accessToken:   doc.accessToken,
-    orgName:       doc.orgName,
-    eventName:     doc.eventName,
+    eventId:         doc.eventId,
+    folderId:        doc.folderId,
+    accessToken:     doc.accessToken,
+    orgName:         doc.orgName,
+    eventName:       doc.eventName,
     photos,
     driveFiles,
-    coverImage:    doc.coverImage,
-    description:   doc.description,
-    eventLocation: doc.eventLocation,
-    eventType:     doc.eventType,
+    faceDescriptors: doc.faceDescriptors || [],
+    coverImage:      doc.coverImage,
+    description:     doc.description,
+    eventLocation:   doc.eventLocation,
+    eventType:       doc.eventType,
   };
   events[doc.eventId] = plain;
   return plain;
@@ -180,10 +184,93 @@ export const createEvent = async (req: Request, res: Response) => {
     }
 
     res.json({ success: true, event: eventData });
+
+    // Background: compute face embeddings for Vercel-compatible JS matching
+    setImmediate(() => computeEmbeddingsBackground(eventId).catch(e =>
+      console.warn('[eventController] Background embedding failed:', e?.message)
+    ));
   } catch (error: any) {
     console.error("Failed to create event:", error);
     res.status(500).json({ error: "Failed to create event" });
   }
+};
+
+// ── Face Embedding Background Job ────────────────────────────────────────────
+
+/**
+ * Downloads each event photo thumbnail and extracts face descriptors (128-d)
+ * using face-api.js + TF.js CPU. Stores them on the event for Vercel matching.
+ * Runs in the background after event create/update so the API response is fast.
+ */
+async function computeEmbeddingsBackground(eventId: string): Promise<void> {
+  const event = events[eventId];
+  if (!event) return;
+
+  const driveFiles = event.driveFiles || [];
+  if (driveFiles.length === 0) return;
+
+  console.log(`[embeddings] Computing face descriptors for ${driveFiles.length} photos in event ${eventId}...`);
+  const t0 = Date.now();
+
+  const descriptorEntries: { name: string; thumbUrl: string; descriptors: number[][] }[] = [];
+
+  // Process in batches to avoid OOM
+  const BATCH = 10;
+  for (let i = 0; i < driveFiles.length; i += BATCH) {
+    const batch = driveFiles.slice(i, i + BATCH);
+    await Promise.all(batch.map(async (file) => {
+      try {
+        let url = file.thumbUrl || '';
+        if (url.includes('googleusercontent.com')) {
+          url = url.replace(/=s\d+$/, '=s400');
+        }
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (!res.ok) return;
+        const buf = Buffer.from(await res.arrayBuffer());
+        const descs = await extractDescriptorsFromBuffer(buf);
+        if (descs.length > 0) {
+          descriptorEntries.push({ name: file.name, thumbUrl: file.thumbUrl, descriptors: descs });
+        }
+      } catch (e: any) {
+        // Skip photos that fail to download or have no face
+      }
+    }));
+
+    if (i % 50 === 0 || i + BATCH >= driveFiles.length) {
+      console.log(`[embeddings] ${Math.min(i + BATCH, driveFiles.length)}/${driveFiles.length} processed, ${descriptorEntries.length} faces found`);
+    }
+  }
+
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+  console.log(`[embeddings] Done in ${elapsed}s — ${descriptorEntries.length} photos with faces for event ${eventId}`);
+
+  // Persist to in-memory store and MongoDB
+  event.faceDescriptors = descriptorEntries;
+  if (isDbConnected()) {
+    try {
+      await EventModel.findOneAndUpdate(
+        { eventId },
+        { $set: { faceDescriptors: descriptorEntries } }
+      ).exec();
+      console.log(`[embeddings] Saved ${descriptorEntries.length} descriptor entries to MongoDB for ${eventId}`);
+    } catch (e: any) {
+      console.warn('[embeddings] Failed to save to MongoDB:', e?.message);
+    }
+  }
+}
+
+/** HTTP endpoint: POST /api/events/:eventId/compute-embeddings (admin-triggered) */
+export const computeEmbeddings = async (req: Request, res: Response) => {
+  const { eventId } = req.params;
+  const event = await findEvent(eventId);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+
+  // Respond immediately then compute in background
+  res.json({ success: true, message: `Computing embeddings for ${event.driveFiles?.length || 0} photos. This runs in the background — check back in a minute.` });
+
+  setImmediate(() => computeEmbeddingsBackground(eventId).catch(e =>
+    console.warn('[computeEmbeddings] Background job failed:', e?.message)
+  ));
 };
 
 export async function findEvent(eventId: string): Promise<EventData | null> {

@@ -8,6 +8,8 @@ export interface IEvent extends Document {
   eventName: string;
   photos: string[];
   driveFiles?: { id: string; thumbUrl: string; name: string }[];
+  /** Pre-computed face embeddings (128-d) for each photo — for JS-based Vercel matching */
+  faceDescriptors?: { name: string; thumbUrl: string; descriptors: number[][] }[];
   coverImage?: string;
   description?: string;
   eventLocation?: string;
@@ -29,6 +31,13 @@ const EventSchema = new Schema<IEvent>(
         id:       String,
         thumbUrl: String,
         name:     String,
+      },
+    ],
+    faceDescriptors: [
+      {
+        name:        String,
+        thumbUrl:    String,
+        descriptors: [[Number]],
       },
     ],
     coverImage:     { type: String },

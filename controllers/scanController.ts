@@ -6,14 +6,15 @@ import os from "os";
 import { events, findEvent } from "./eventController.js";
 import { initAnalytics, eventAnalytics } from "./analyticsController.js";
 import { getBulkPhotoDir, ensureDirExists, removeDirSync } from "../services/storageService.js";
-import { runPythonScan, ScanMatch } from "../services/faceScanService.js";
+import { runPythonScan } from "../services/faceScanService.js";
+import { matchDescriptor, extractDescriptorsFromBuffer } from "../services/faceEmbeddingService.js";
 
 const scanRateLimit = new Map<string, { count: number; resetTime: number }>();
 
 export const rateLimiter = (req: Request, res: Response, next: NextFunction) => {
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   const now = Date.now();
-  const limit = 30; // generous limit
+  const limit = 30;
   const windowMs = 60 * 1000;
 
   let record = scanRateLimit.get(ip);
@@ -36,10 +37,10 @@ export const scanFaces = async (req: Request, res: Response) => {
   let scanTempDir = "";
 
   try {
-    const { eventId, referenceImage } = req.body;
+    const { eventId, referenceImage, selfieDescriptor } = req.body;
 
-    if (!eventId || !referenceImage) {
-      return res.status(400).json({ error: "Missing required parameters: eventId or referenceImage" });
+    if (!eventId || (!referenceImage && !selfieDescriptor)) {
+      return res.status(400).json({ error: "Missing required parameters: eventId and referenceImage or selfieDescriptor" });
     }
 
     let event = await findEvent(eventId);
@@ -60,107 +61,153 @@ export const scanFaces = async (req: Request, res: Response) => {
       eventAnalytics[resolvedEventId].faceScans += 1;
     }
 
-    const matches = referenceImage.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) {
-      return res.status(400).json({ error: "Invalid base64 string for reference image" });
+    // ─── PRIMARY PATH: Client-sent descriptor (works on Vercel) ──────────────
+    // The browser extracts the 128-d face descriptor using face-api.js and sends it here.
+    // We do pure-JS cosine similarity against pre-computed event photo embeddings.
+    if (selfieDescriptor && Array.isArray(selfieDescriptor) && selfieDescriptor.length === 128) {
+      const faceDescriptors = event.faceDescriptors || [];
+
+      if (faceDescriptors.length > 0) {
+        console.log(`[scanController] JS matching selfie descriptor against ${faceDescriptors.length} photos (Vercel-safe)`);
+        const matches = matchDescriptor(selfieDescriptor as number[], faceDescriptors);
+
+        return res.json({
+          matches: matches.map(m => m.thumbUrl),
+          count: matches.length,
+          engine: "faceapi-js-cosine",
+          details: matches.slice(0, 5),
+        });
+      }
+
+      // No pre-computed descriptors yet — try to extract on-the-fly from referenceImage
+      // and compare against all photos by downloading them (only works if Python path also fails)
+      console.warn(`[scanController] No faceDescriptors for event ${resolvedEventId}. Falling back to photo list.`);
     }
-    const base64Data = matches[2];
-    const mimeType = matches[1];
-    const ext = mimeType.split('/')[1] || 'jpg';
 
-    // Check all event photos
-    const allCloudFiles = (event.driveFiles && event.driveFiles.length > 0)
-      ? event.driveFiles
-      : (event.photos || []).map((p, idx) => ({ id: `p_${idx}`, name: path.basename(p), thumbUrl: p }));
+    // ─── SECONDARY PATH: Server-side Python/OpenCV (local development) ───────
+    // Works only when Python + OpenCV are available (local dev, Docker/Render).
+    if (referenceImage) {
+      const matches = referenceImage.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const base64Data = matches[2];
+        const mimeType = matches[1];
+        const ext = mimeType.split('/')[1] || 'jpg';
 
-    let scanBulkDir = getBulkPhotoDir(eventId);
-    let pythonMatched = false;
-    let matchedUrls: string[] = [];
+        const allCloudFiles = (event.driveFiles && event.driveFiles.length > 0)
+          ? event.driveFiles
+          : (event.photos || []).map((p, idx) => ({ id: `p_${idx}`, name: path.basename(p), thumbUrl: p }));
 
-    // Check if python is available
-    try {
-      const uniqueId = crypto.randomBytes(8).toString("hex");
-      scanTempDir = path.join(os.tmpdir(), `potopic_scan_${uniqueId}`);
-      ensureDirExists(scanTempDir);
-      tempSelfiePath = path.join(scanTempDir, `selfie.${ext}`);
-      fs.writeFileSync(tempSelfiePath, Buffer.from(base64Data, 'base64'));
+        let scanBulkDir = getBulkPhotoDir(eventId);
+        let pythonMatched = false;
+        let matchedUrls: string[] = [];
 
-      ensureDirExists(scanBulkDir);
-      const driveFiles = event.driveFiles || [];
+        // Try Python scan (local/Docker only)
+        try {
+          const uniqueId = crypto.randomBytes(8).toString("hex");
+          scanTempDir = path.join(os.tmpdir(), `potopic_scan_${uniqueId}`);
+          ensureDirExists(scanTempDir);
+          tempSelfiePath = path.join(scanTempDir, `selfie.${ext}`);
+          fs.writeFileSync(tempSelfiePath, Buffer.from(base64Data, 'base64'));
 
-      // Download any missing event files into cache if not already present
-      if (driveFiles.length > 0) {
-        const existingFiles = new Set(fs.readdirSync(scanBulkDir));
-        const missing = driveFiles.filter(f => !existingFiles.has(f.name));
+          ensureDirExists(scanBulkDir);
+          const driveFiles = event.driveFiles || [];
 
-        if (missing.length > 0) {
-          console.log(`[scanController] Downloading ${missing.length} missing photos for scanning...`);
-          const batchSize = 12;
-          for (let i = 0; i < missing.length; i += batchSize) {
-            const batch = missing.slice(i, i + batchSize);
-            await Promise.all(
-              batch.map(async (file) => {
-                const destPath = path.join(scanBulkDir, file.name);
-                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 100) return;
+          if (driveFiles.length > 0) {
+            const existingFiles = new Set(fs.readdirSync(scanBulkDir));
+            const missing = driveFiles.filter(f => !existingFiles.has(f.name));
 
-                let downloadUrl = file.thumbUrl;
-                if (downloadUrl.includes("googleusercontent.com")) {
-                  downloadUrl = downloadUrl.replace(/=s\d+$/, "=s768");
-                }
-                try {
-                  const fileRes = await fetch(downloadUrl, {
-                    headers: { "User-Agent": "Mozilla/5.0" }
-                  });
-                  if (fileRes.ok) {
-                    const buf = Buffer.from(await fileRes.arrayBuffer());
-                    fs.writeFileSync(destPath, buf);
-                  }
-                } catch (e) {}
-              })
-            );
+            if (missing.length > 0) {
+              console.log(`[scanController] Downloading ${missing.length} missing photos for scanning...`);
+              const batchSize = 12;
+              for (let i = 0; i < missing.length; i += batchSize) {
+                const batch = missing.slice(i, i + batchSize);
+                await Promise.all(
+                  batch.map(async (file) => {
+                    const destPath = path.join(scanBulkDir, file.name);
+                    if (fs.existsSync(destPath) && fs.statSync(destPath).size > 100) return;
+                    let downloadUrl = file.thumbUrl;
+                    if (downloadUrl.includes("googleusercontent.com")) {
+                      downloadUrl = downloadUrl.replace(/=s\d+$/, "=s768");
+                    }
+                    try {
+                      const fileRes = await fetch(downloadUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+                      if (fileRes.ok) {
+                        const buf = Buffer.from(await fileRes.arrayBuffer());
+                        fs.writeFileSync(destPath, buf);
+                      }
+                    } catch (e) {}
+                  })
+                );
+              }
+            }
           }
+
+          console.log(`[scanController] Running OpenCV SFace scan (${fs.readdirSync(scanBulkDir).length} photos)...`);
+          const result = await runPythonScan(tempSelfiePath, scanBulkDir);
+          if (result && !result.error && Array.isArray(result.matches)) {
+            matchedUrls = result.matches.map((m: any) => {
+              const matchFile = event!.driveFiles?.find(f => f.name === m.name);
+              if (matchFile?.thumbUrl) return matchFile.thumbUrl;
+              if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
+              return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+            }).filter(Boolean) as string[];
+            pythonMatched = true;
+          }
+        } catch (err: any) {
+          console.warn("[scanController] Python scan not available:", err?.message || err);
         }
-      }
 
-      console.log(`[scanController] Running OpenCV SFace scan for event ${eventId} (${fs.readdirSync(scanBulkDir).length} photos)...`);
-      const result = await runPythonScan(tempSelfiePath, scanBulkDir);
-      if (result && !result.error && Array.isArray(result.matches)) {
-        matchedUrls = result.matches.map((m: any) => {
-          const matchFile = event.driveFiles?.find(f => f.name === m.name);
-          if (matchFile?.thumbUrl) return matchFile.thumbUrl;
-          if (matchFile?.id) return `/api/drive-proxy/${matchFile.id}`;
-          return `/bulk_photo/${eventId}/${encodeURIComponent(m.name)}`;
+        if (scanTempDir && fs.existsSync(scanTempDir)) {
+          try { removeDirSync(scanTempDir); } catch (e) {}
+        }
+
+        if (pythonMatched) {
+          return res.json({
+            matches: matchedUrls,
+            count: matchedUrls.length,
+            engine: "opencv-sface-biometrics",
+          });
+        }
+
+        // ─── FALLBACK: JS server-side extraction from raw selfie image ────────
+        // Extract descriptor from the base64 selfie right here on the server
+        // using face-api.js (works on Vercel, but no pre-computed event embeddings).
+        try {
+          const selfieBuffer = Buffer.from(base64Data, 'base64');
+          const selfieDescs = await extractDescriptorsFromBuffer(selfieBuffer);
+          if (selfieDescs.length > 0 && (event.faceDescriptors?.length ?? 0) > 0) {
+            const bestSelfieDesc = selfieDescs[0];
+            const matches = matchDescriptor(bestSelfieDesc, event.faceDescriptors!);
+            if (matches.length > 0) {
+              return res.json({
+                matches: matches.map(m => m.thumbUrl),
+                count: matches.length,
+                engine: "faceapi-js-server-fallback",
+              });
+            }
+          }
+        } catch (jsErr: any) {
+          console.warn("[scanController] JS server-side extraction failed:", jsErr?.message);
+        }
+
+        // ─── LAST RESORT: Return event photos so attendee sees something ─────
+        const candidateUrls = allCloudFiles.map(f => {
+          if (f.thumbUrl) return f.thumbUrl;
+          if (f.id) return `/api/drive-proxy/${encodeURIComponent(f.id)}`;
+          return null;
         }).filter(Boolean) as string[];
-        pythonMatched = true;
+
+        return res.json({
+          matches: candidateUrls.slice(0, 60),
+          count: Math.min(candidateUrls.length, 60),
+          engine: "cloud-stream-fallback",
+          notice: "Face embeddings not yet computed for this event. Admin should re-sync to enable accurate matching.",
+        });
       }
-    } catch (err: any) {
-      console.warn("[scanController] Python scan not available:", err?.message || err);
     }
 
-    if (scanTempDir && fs.existsSync(scanTempDir)) {
-      try { removeDirSync(scanTempDir); } catch (e) {}
-    }
+    return res.status(400).json({ error: "Invalid or missing image data." });
 
-    if (pythonMatched) {
-      return res.json({ 
-        matches: matchedUrls, 
-        count: matchedUrls.length,
-        engine: "opencv-sface-biometrics" 
-      });
-    }
-
-    // If Python is unavailable on this host (e.g. Vercel serverless), return photos from the event
-    const candidateUrls = allCloudFiles.map(f => {
-      if (f.thumbUrl) return f.thumbUrl;
-      if (f.id) return `/api/drive-proxy/${encodeURIComponent(f.id)}`;
-      return null;
-    }).filter(Boolean) as string[];
-
-    return res.json({
-      matches: candidateUrls.slice(0, 60),
-      count: Math.min(candidateUrls.length, 60),
-      engine: "cloud-stream-fallback"
-    });
   } catch (error: any) {
     console.error("Scan error:", error);
     if (scanTempDir && fs.existsSync(scanTempDir)) {
