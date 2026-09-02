@@ -178,8 +178,8 @@ export const scanFaces = async (req: Request, res: Response) => {
           }
 
           const validFileNames = (event.driveFiles || []).map(f => f.name);
-          // Set precision threshold to 0.44 to eliminate false positives
-          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.44, validFileNames);
+          // 0.38 threshold allows genuine resemblance (0.41 - 0.78) while strictly blocking strangers (<0.30)
+          const nodeMatches = matchSFaceAgainstSqlite(selfieVec, resolvedEventId, 0.38, validFileNames);
 
           if (nodeMatches.length > 0) {
             console.log(`[scanController] Precision SFace matched ${nodeMatches.length} photos!`);
