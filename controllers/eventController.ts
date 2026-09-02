@@ -30,14 +30,20 @@ export const events: Record<string, EventData> = {};
 
 /** Sync a DB document into the in-memory map for consistency */
 function syncToMemory(doc: any) {
+  const driveFiles = doc.driveFiles || [];
+  let photos = doc.photos || [];
+  if (photos.length === 0 && driveFiles.length > 0) {
+    photos = driveFiles.map((f: any) => f.thumbUrl || `/api/drive-proxy/${f.id}`);
+  }
+
   const plain: EventData = {
     eventId:       doc.eventId,
     folderId:      doc.folderId,
     accessToken:   doc.accessToken,
     orgName:       doc.orgName,
     eventName:     doc.eventName,
-    photos:        doc.photos || [],
-    driveFiles:    doc.driveFiles || [],
+    photos,
+    driveFiles,
     coverImage:    doc.coverImage,
     description:   doc.description,
     eventLocation: doc.eventLocation,
@@ -138,8 +144,6 @@ export const createEvent = async (req: Request, res: Response) => {
     const eventDir = getBulkPhotoDir(eventId);
     ensureDirExists(eventDir);
 
-    const photos: string[] = [];
-
     if (folderId === "local_upload") {
       return res.status(400).json({
         error: "Local disk storage is disabled. Please connect a Microsoft OneDrive or Google Drive folder."
@@ -153,11 +157,13 @@ export const createEvent = async (req: Request, res: Response) => {
       driveFiles = await scrapeDriveFolderEntries(folderId);
     }
 
+    const photos: string[] = driveFiles.map(f => f.thumbUrl || `/api/drive-proxy/${f.id}`);
+
     const eventData: EventData = {
       eventId, folderId, accessToken,
       orgName: orgName || "Photographer",
       eventName: eventName || "New Event",
-      photos: [],
+      photos,
       driveFiles,
       coverImage
     };
@@ -202,6 +208,14 @@ export const getEvents = async (req: Request, res: Response) => {
       console.warn("Could not query DB in getEvents:", err);
     }
   }
+
+  // Backfill photos array for any event where photos is empty but driveFiles exists
+  Object.values(events).forEach(e => {
+    if ((!e.photos || e.photos.length === 0) && e.driveFiles && e.driveFiles.length > 0) {
+      e.photos = e.driveFiles.map(f => f.thumbUrl || `/api/drive-proxy/${f.id}`);
+    }
+  });
+
   res.json({ events: Object.values(events) });
 };
 
