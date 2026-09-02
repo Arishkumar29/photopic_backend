@@ -46,15 +46,16 @@ def get_sqlite_conn():
 
 
 def get_cached_faces(file_path, current_mtime):
-    """Return list of (feat_array,) tuples from cache if mtime matches, else empty list."""
+    """Retrieve cached feature vectors for an image from SQLite cache."""
     conn = get_sqlite_conn()
     if conn is None:
         return []
     try:
         cursor = conn.cursor()
+        filename = os.path.basename(file_path)
         cursor.execute(
-            "SELECT feat_blob, file_mtime FROM face_cache WHERE file_path = ? ORDER BY face_index",
-            (file_path,)
+            "SELECT feat_blob, file_mtime FROM face_cache WHERE file_path = ? OR file_path LIKE ? ORDER BY face_index",
+            (file_path, f"%{filename}")
         )
         rows = cursor.fetchall()
         if not rows:
@@ -413,6 +414,23 @@ def match_faces(selfie_path, image_paths):
                 s_faces_sorted = sorted(s_faces, key=lambda f: f[2] * f[3], reverse=True)
                 aligned = recognizer.alignCrop(selfie_img, s_faces_sorted[0])
                 selfie_feats = [recognizer.feature(aligned)]
+
+    if not selfie_feats:
+        # Fallback for close-up webcam or cropped selfies where landmark detector misses:
+        # Resize center square directly to 112x112 for SFace extraction
+        h, w = selfie_img.shape[:2]
+        min_dim = min(h, w)
+        cy, cx = h // 2, w // 2
+        crop = selfie_img[cy - min_dim//2 : cy + min_dim//2, cx - min_dim//2 : cx + min_dim//2]
+        if crop.size > 0:
+            face_112 = cv2.resize(crop, (112, 112))
+            feat = recognizer.feature(face_112)
+            if feat is not None:
+                selfie_feats = [feat]
+                flipped = cv2.flip(face_112, 1)
+                flip_feat = recognizer.feature(flipped)
+                if flip_feat is not None:
+                    selfie_feats.append(flip_feat)
 
     if not selfie_feats:
         sys.stderr.write("[SFace Engine] ERROR: No face detected in selfie\n")
