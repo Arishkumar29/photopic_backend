@@ -4,11 +4,13 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: free
+    plan: starter            # AuraFace needs ~450 MB RAM; the 512 MB free plan is too tight
     region: oregon
     healthCheckPath: /api/health
+    disk:                    # keeps events, face index and analytics across deploys
+      name: photopic-data
+      mountPath: /app/data
+      sizeGB: 1
     envVars:
-      - key: PORT
-        value: 3000
-      - key: NODE_ENV
-        value: production
+      - key: MONGODB_URI     # optional: store events in MongoDB Atlas instead of the disk
+        sync: false

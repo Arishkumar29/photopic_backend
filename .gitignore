@@ -1,6 +1,8 @@
-node_modules
-bulk_photo
+.venv/
+__pycache__/
+data/
 .env
 .env.local
-dist
 *.log
+# downloaded on first run / at image build (261 MB)
+models/auraface_glintr100.onnx
