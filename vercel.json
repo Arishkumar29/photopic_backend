@@ -1,11 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/index.py": {
+    "app/main.py": {
       "memory": 2048,
       "maxDuration": 300,
       "excludeFiles": "{.venv/**,data/**,models/auraface_glintr100.onnx,**/__pycache__/**,.env}"
     }
-  },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+  }
 }
