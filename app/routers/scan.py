@@ -46,34 +46,37 @@ async def scan_faces(body: ScanFaces, request: Request):
     if not body.eventId:
         raise HTTPException(400, "Missing eventId")
     # Never fall back to another event: that would show a guest someone else's photos.
-    if not (event := event_store.get(body.eventId)):
+    if not (event := await event_store.find(body.eventId)):
         raise HTTPException(404, "Event not found. Please check your event link or QR code.")
     if not (image := _decode(body.referenceImage)):
         raise HTTPException(400, "Missing or unreadable selfie image.")
 
     started = time.perf_counter()
-    selfie = await face_engine.run_scan(face_engine.selfie_vectors, image)
+    await asyncio.to_thread(face_engine.load)  # no-op once warm; downloads the model on a cold serverless start
+    selfie, quality = await face_engine.run_scan(face_engine.selfie_vectors, image)
+    report = quality.to_json() if quality else None
     if selfie is None:
         return JSONResponse(status_code=422, content={
             "error": "no_face",
             "message": "We couldn't find a face in your selfie. Face the camera in good light and try again.",
+            "quality": report,
         })
     await analytics.record(event["eventId"], "faceScans")
 
-    status = face_index.status(event)
+    status = await face_index.status_async(event)
     if status["state"] == "pending":
         face_index.start(event)
-        status = face_index.status(event)
 
     file_ids, faces = await asyncio.to_thread(face_index.event_faces, event["eventId"])
     matches = matcher.match(selfie, file_ids, faces)
-    log.info("%s: %d photos matched against %d faces in %.0f ms", event["eventId"], len(matches),
-             len(file_ids), (time.perf_counter() - started) * 1000)
+    log.info("%s: %d photos matched against %d faces in %.0f ms (quality %s)", event["eventId"], len(matches),
+             len(file_ids), (time.perf_counter() - started) * 1000, report and report["score"])
 
     return {
         "matches": [f"/api/drive-proxy/{m.file_id}" for m in matches],
         "count": len(matches),
         "scores": [m.score for m in matches],
-        # Present while photos are still being indexed: more matches may appear later.
-        "indexing": status if status["state"] == "indexing" else None,
+        "quality": report,
+        # Present until every photo is indexed: more matches may appear later.
+        "indexing": status if status["state"] != "ready" else None,
     }

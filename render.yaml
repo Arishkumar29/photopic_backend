@@ -14,3 +14,9 @@ services:
     envVars:
       - key: MONGODB_URI     # optional: store events in MongoDB Atlas instead of the disk
         sync: false
+      - key: ADMIN_EMAIL     # organizer login for the admin portal
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: AUTH_SECRET     # signs admin sessions
+        generateValue: true

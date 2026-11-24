@@ -1,0 +1,11 @@
+# Never upload these to Vercel (CLI deploys send the local folder).
+.venv
+.env
+.env.*
+data
+__pycache__
+*.pyc
+# 261 MB: downloaded to /tmp on cold start instead (the bundle limit is 250 MB).
+models/auraface_glintr100.onnx
+Dockerfile
+render.yaml

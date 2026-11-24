@@ -12,6 +12,10 @@ class CreateEvent(_Body):
     orgName: str | None = None
     eventName: str | None = None
     coverImage: str | None = None
+    description: str | None = None
+    eventLocation: str | None = None
+    eventType: str | None = None
+    eventDate: str | None = None
 
 
 class UpdateEvent(_Body):
@@ -21,7 +25,18 @@ class UpdateEvent(_Body):
     description: str | None = None
     eventLocation: str | None = None
     eventType: str | None = None
+    eventDate: str | None = None
     folderId: str | None = None
+
+
+class ZipRequest(_Body):
+    files: list[str] | None = None
+    name: str | None = None
+
+
+class Login(_Body):
+    email: str | None = None
+    password: str | None = None
 
 
 class ScanFaces(_Body):

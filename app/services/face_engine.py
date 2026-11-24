@@ -44,14 +44,23 @@ class Face:
     vector: np.ndarray  # L2-normalised, 512-d
     box: tuple[int, int, int, int]
     score: float
+    thumb: bytes | None = None  # 112x112 aligned crop (JPEG) for the admin People view
 
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
+_model_lock = threading.Lock()
+
+
 def ensure_model() -> None:
     """Download the recognizer on first run and verify its checksum."""
-    if RECOGNIZER_MODEL.exists():
-        return
+    with _model_lock:
+        if not RECOGNIZER_MODEL.exists():
+            _download_model()
+
+
+def _download_model() -> None:
+    RECOGNIZER_MODEL.parent.mkdir(parents=True, exist_ok=True)
     log.info("Downloading AuraFace model (261 MB) from %s", RECOGNIZER_URL)
     tmp = RECOGNIZER_MODEL.with_suffix(".part")
     digest = hashlib.sha256()
@@ -67,8 +76,14 @@ def ensure_model() -> None:
     tmp.replace(RECOGNIZER_MODEL)
 
 
+def loaded() -> bool:
+    return _session is not None
+
+
 def load() -> None:
     global _session
+    if _session is not None:
+        return
     ensure_model()
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = MODEL_THREADS
@@ -156,35 +171,111 @@ def photo_faces(data: bytes) -> list[Face] | None:
     faces = [f for f in _detect(img, MIN_PHOTO_SCORE) if f[2] >= MIN_FACE_PX]
     if not faces:
         return []
-    vectors = _embed([_align(img, f[4:14]) for f in faces])
+    crops = [_align(img, f[4:14]) for f in faces]
+    vectors = _embed(crops)
     return [
-        Face(vec.astype(np.float32), tuple(int(v) for v in f[:4]), round(float(f[14]), 3))
-        for vec, f in zip(vectors, faces)
+        Face(vec.astype(np.float32), tuple(int(v) for v in f[:4]), round(float(f[14]), 3), _jpeg(crop))
+        for vec, f, crop in zip(vectors, faces, crops)
     ]
 
 
-def _largest_face(img: np.ndarray) -> np.ndarray | None:
+def _jpeg(crop: np.ndarray) -> bytes:
+    return cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 82])[1].tobytes()
+
+
+def _faces_any(img: np.ndarray) -> np.ndarray:
     for threshold in SELFIE_THRESHOLDS:
         faces = _detect(img, threshold)
         if len(faces):
-            return max(faces, key=lambda f: f[2] * f[3])
-    return None
+            return faces
+    return np.empty((0, 15), dtype=np.float32)
 
 
-def selfie_vectors(data: bytes) -> np.ndarray | None:
-    """The selfie's main face as original, CLAHE and mirrored vectors (None = no face).
+# ── Selfie quality coach ────────────────────────────────────────────────────
+# Calibrated on phone selfies and event photos: below these the match rate drops.
+DARK_LUMA = 55
+BRIGHT_LUMA = 190
+BLUR_VAR = 50          # contrast-normalised Laplacian variance (event faces: 2nd pct 67; sharp selfie ~210)
+SMALL_FACE = 0.16      # face width / shorter image side
+SMALL_FACE_PX = 90
+YAW_LIMIT = 0.38       # nose offset from the eye midpoint / eye distance (frontal < 0.1, profile > 0.5)
+
+_MESSAGES = {
+    "dark": "It's a bit dark. Face a window or a light and try again.",
+    "bright": "Too much light on your face. Step out of direct sun or flash.",
+    "blurry": "The selfie is blurry. Hold the phone steady for a second.",
+    "small": "Your face is small in the picture. Move the camera closer.",
+    "angle": "Look straight at the camera, not to the side.",
+    "multiple": "Several faces are in the picture. We used the biggest one: take a selfie of just you.",
+    "partial": "Part of your face is cut off. Keep your whole face in the frame.",
+}
+
+
+@dataclass
+class SelfieQuality:
+    faces: int
+    issues: list[str]
+
+    def to_json(self) -> dict:
+        penalty = {"dark": 25, "bright": 20, "blurry": 30, "small": 20, "angle": 20, "multiple": 10, "partial": 20}
+        score = max(0, 100 - sum(penalty.get(code, 10) for code in self.issues))
+        return {"score": score, "faces": self.faces,
+                "issues": [{"code": code, "message": _MESSAGES[code]} for code in self.issues]}
+
+
+def _sharpness(gray: np.ndarray) -> float:
+    """Laplacian variance after normalising contrast, so dark faces don't read as blurry."""
+    inner = gray[16:104, 16:96].astype(np.float32)
+    norm = (inner - inner.mean()) / (inner.std() + 1e-3) * 40
+    return float(cv2.Laplacian(norm, cv2.CV_32F).var())
+
+
+def _quality(img: np.ndarray, faces: np.ndarray, face: np.ndarray, crop: np.ndarray) -> SelfieQuality:
+    issues: list[str] = []
+    h, w = img.shape[:2]
+    x, y, fw, fh = face[:4]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Brightness of the inner face only (the aligned crop's border can be black fill).
+    luma = float(gray[20:100, 24:88].mean())
+    if luma < DARK_LUMA:
+        issues.append("dark")
+    elif luma > BRIGHT_LUMA:
+        issues.append("bright")
+    if _sharpness(gray) < BLUR_VAR:
+        issues.append("blurry")
+    if fw < SMALL_FACE_PX or fw / min(h, w) < SMALL_FACE:
+        issues.append("small")
+    eyes = face[4:8].reshape(2, 2)
+    eye_dist = float(np.linalg.norm(eyes[1] - eyes[0])) or 1.0
+    if abs(face[8] - eyes[:, 0].mean()) / eye_dist > YAW_LIMIT:
+        issues.append("angle")
+    if x < -fw * 0.08 or y < -fh * 0.08 or x + fw > w * 1.02 or y + fh > h * 1.02:
+        issues.append("partial")
+    # Other faces at least 60% as wide as the main one are real people, not background.
+    if sum(1 for f in faces if f[2] >= 0.6 * fw) > 1:
+        issues.append("multiple")
+    return SelfieQuality(len(faces), issues)
+
+
+def selfie_vectors(data: bytes) -> tuple[np.ndarray | None, SelfieQuality | None]:
+    """The selfie's main face as original, CLAHE and mirrored vectors, plus a quality report.
 
     Front cameras mirror the picture and phone lighting differs from the
     photographer's, so matching takes the best score over the variants.
+    Returns (None, quality-or-None) when no face is found.
     """
     img = decode(data)
     if img is None:
-        return None
-    face = _largest_face(img)
-    if face is None:
-        face = _largest_face(_enhance(img))
-        if face is None:
-            return None
+        return None, None
+    faces = _faces_any(img)
+    if not len(faces):
+        enhanced = _enhance(img)
+        faces = _faces_any(enhanced)
+        if not len(faces):
+            luma = float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean())
+            hint = ["dark"] if luma < DARK_LUMA else ["bright"] if luma > BRIGHT_LUMA else []
+            return None, SelfieQuality(0, hint)
+    face = max(faces, key=lambda f: f[2] * f[3])
     crops = [_align(img, face[4:14]), _align(_enhance(img), face[4:14])]
     crops.append(cv2.flip(crops[0], 1))
-    return _embed(crops).astype(np.float32)
+    return _embed(crops).astype(np.float32), _quality(img, faces, face, crops[0])
