@@ -8,3 +8,4 @@ data/
 models/auraface_glintr100.onnx
 
 .vercel
+.env*
