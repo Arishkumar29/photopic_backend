@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, Request
 
 from ..schemas import Login
@@ -8,8 +10,9 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth/login")
 async def login(body: Login, request: Request):
-    auth.check_login(request, body.email or "", body.password or "")
-    token, expires = auth.issue_token()
+    # PBKDF2 takes ~0.3 s: keep it off the event loop.
+    await asyncio.to_thread(auth.check_login, request, body.email or "", body.password or "")
+    token, expires = await asyncio.to_thread(auth.issue_token, body.password or "")
     return {"token": token, "expiresAt": expires, "user": auth.user()}
 
 

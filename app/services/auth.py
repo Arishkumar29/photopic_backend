@@ -1,7 +1,12 @@
-"""Admin login: one organizer account from env vars, stateless signed tokens.
+"""Admin login: one organizer account, stateless signed tokens.
 
-ADMIN_EMAIL / ADMIN_PASSWORD   the organizer's credentials (required to log in)
+ADMIN_EMAIL / ADMIN_PASSWORD   the organizer's credentials (override the built-in account)
 AUTH_SECRET                    signs tokens; if unset, one is derived from the credentials
+
+Without env vars the built-in GWC account is used. The repo is public, so only
+one-way hashes of its password are stored here: a PBKDF2 hash to check the
+password, and a hash of a second password-derived key that signs its tokens
+(the key travels inside the token, so nobody can mint a token without the password).
 """
 import base64
 import hashlib
@@ -25,6 +30,17 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip().lower()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 ADMIN_NAME = os.getenv("ADMIN_NAME", "").strip()
 
+DEFAULT_EMAIL = "admin@gwcdata.ai"
+DEFAULT_NAME = "GWC Admin"
+DEFAULT_SALT = "5605616cc9d6fe8f45b20c23ad4e7d6a"
+DEFAULT_PASSWORD_HASH = "af385bdc2c81f0cea338e5a96c7f4305e276fba9e16fbd0701f716c2fa95cab1"
+DEFAULT_KEY_CHECK = "383805cc10c022b19b2a3a6ba4c29b6dc92a34cf924afc513f960e1f084ed429"
+PBKDF2_ROUNDS = 300_000
+
+USE_ENV = bool(ADMIN_EMAIL and ADMIN_PASSWORD)
+if not USE_ENV:
+    ADMIN_EMAIL, ADMIN_NAME = DEFAULT_EMAIL, ADMIN_NAME or DEFAULT_NAME
+
 _failures: dict[str, list[float]] = {}
 
 
@@ -41,7 +57,11 @@ _SECRET = _load_secret()
 
 
 def configured() -> bool:
-    return bool(ADMIN_EMAIL and ADMIN_PASSWORD)
+    return True
+
+
+def _pbkdf2(password: str, salt: str) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ROUNDS)
 
 
 def _b64(data: bytes) -> str:
@@ -52,24 +72,34 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _sign(payload: str) -> str:
-    return _b64(hmac.new(_SECRET, payload.encode(), hashlib.sha256).digest())
+def _sign(payload: str, key: bytes = _SECRET) -> str:
+    return _b64(hmac.new(key, payload.encode(), hashlib.sha256).digest())
 
 
 def user() -> dict:
     return {"email": ADMIN_EMAIL, "name": ADMIN_NAME or ADMIN_EMAIL.split("@")[0].replace(".", " ").title()}
 
 
-def issue_token() -> tuple[str, int]:
+def issue_token(password: str = "") -> tuple[str, int]:
     expires = int(time.time()) + TOKEN_TTL
     payload = _b64(json.dumps({"sub": ADMIN_EMAIL, "exp": expires}).encode())
-    return f"{payload}.{_sign(payload)}", expires
+    if USE_ENV:
+        return f"{payload}.{_sign(payload)}", expires
+    key = _pbkdf2(password, DEFAULT_SALT + "|token")
+    return f"{payload}.{_sign(payload, key)}.{_b64(key)}", expires
 
 
 def verify_token(token: str) -> bool:
     try:
-        payload, signature = token.split(".", 1)
-        if not hmac.compare_digest(signature, _sign(payload)):
+        if USE_ENV:
+            payload, signature = token.split(".", 1)
+            key = _SECRET
+        else:
+            payload, signature, key_b64 = token.split(".", 2)
+            key = _unb64(key_b64)
+            if not hmac.compare_digest(hashlib.sha256(key).hexdigest(), DEFAULT_KEY_CHECK):
+                return False
+        if not hmac.compare_digest(signature, _sign(payload, key)):
             return False
         claims = json.loads(_unb64(payload))
     except (ValueError, json.JSONDecodeError):
@@ -83,14 +113,15 @@ def _client(request: Request) -> str:
 
 
 def check_login(request: Request, email: str, password: str) -> None:
-    if not configured():
-        raise HTTPException(503, "Admin login is not set up. Set ADMIN_EMAIL and ADMIN_PASSWORD on the server.")
     ip, now = _client(request), time.time()
     recent = [t for t in _failures.get(ip, []) if t > now - LOGIN_WINDOW]
     if len(recent) >= LOGIN_LIMIT:
         raise HTTPException(429, "Too many attempts. Please wait a few minutes and try again.")
     email_ok = hmac.compare_digest((email or "").strip().lower().encode(), ADMIN_EMAIL.encode())
-    password_ok = hmac.compare_digest((password or "").encode(), ADMIN_PASSWORD.encode())
+    if USE_ENV:
+        password_ok = hmac.compare_digest((password or "").encode(), ADMIN_PASSWORD.encode())
+    else:
+        password_ok = hmac.compare_digest(_pbkdf2(password or "", DEFAULT_SALT).hex(), DEFAULT_PASSWORD_HASH)
     if not (email_ok and password_ok):
         _failures[ip] = recent + [now]
         log.warning("Failed admin login from %s", ip)
