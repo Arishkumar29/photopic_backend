@@ -17,7 +17,7 @@ import httpx
 import numpy as np
 import onnxruntime as ort
 
-from ..config import DETECTOR_MODEL, MODEL_THREADS, RECOGNIZER_MODEL, RECOGNIZER_SHA256, RECOGNIZER_URL
+from ..config import DETECTOR_MODEL, IS_SERVERLESS, MODEL_THREADS, RECOGNIZER_MODEL, RECOGNIZER_SHA256, RECOGNIZER_URL
 
 log = logging.getLogger("face_engine")
 
@@ -56,24 +56,24 @@ def ensure_model() -> None:
     """Download the recognizer on first run and verify its checksum."""
     with _model_lock:
         if not RECOGNIZER_MODEL.exists():
-            _download_model()
+            data = _fetch_model()
+            RECOGNIZER_MODEL.parent.mkdir(parents=True, exist_ok=True)
+            tmp = RECOGNIZER_MODEL.with_suffix(".part")
+            tmp.write_bytes(data)
+            tmp.replace(RECOGNIZER_MODEL)
 
 
-def _download_model() -> None:
-    RECOGNIZER_MODEL.parent.mkdir(parents=True, exist_ok=True)
+def _fetch_model() -> bytes:
+    """The 261 MB AuraFace model, downloaded and checksum-verified, in memory."""
     log.info("Downloading AuraFace model (261 MB) from %s", RECOGNIZER_URL)
-    tmp = RECOGNIZER_MODEL.with_suffix(".part")
-    digest = hashlib.sha256()
+    data = bytearray()
     with httpx.stream("GET", RECOGNIZER_URL, follow_redirects=True, timeout=120) as res:
         res.raise_for_status()
-        with open(tmp, "wb") as fh:
-            for chunk in res.iter_bytes(1 << 20):
-                fh.write(chunk)
-                digest.update(chunk)
-    if digest.hexdigest() != RECOGNIZER_SHA256:
-        tmp.unlink(missing_ok=True)
+        for chunk in res.iter_bytes(1 << 20):
+            data += chunk
+    if hashlib.sha256(data).hexdigest() != RECOGNIZER_SHA256:
         raise RuntimeError("AuraFace download is corrupt (checksum mismatch)")
-    tmp.replace(RECOGNIZER_MODEL)
+    return bytes(data)
 
 
 def loaded() -> bool:
@@ -84,11 +84,21 @@ def load() -> None:
     global _session
     if _session is not None:
         return
-    ensure_model()
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = MODEL_THREADS
     # ONNX Runtime sessions are thread-safe for run(): one copy serves both pools.
-    _session = ort.InferenceSession(str(RECOGNIZER_MODEL), opts, providers=["CPUExecutionProvider"])
+    if IS_SERVERLESS:
+        # Vercel unpacks the Python packages into /tmp, leaving no room for a 261 MB
+        # file there: load the model straight from memory instead.
+        with _model_lock:
+            if _session is not None:
+                return
+            for leftover in RECOGNIZER_MODEL.parent.glob("*.part"):
+                leftover.unlink(missing_ok=True)  # half-written files from older builds
+            _session = ort.InferenceSession(_fetch_model(), opts, providers=["CPUExecutionProvider"])
+    else:
+        ensure_model()
+        _session = ort.InferenceSession(str(RECOGNIZER_MODEL), opts, providers=["CPUExecutionProvider"])
     _index_pool.submit(_detector).result()
     _scan_pool.submit(_detector).result()
 
