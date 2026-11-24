@@ -1,5 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "installCommand": null,
+  "buildCommand": null,
+  "outputDirectory": null,
   "functions": {
     "app/main.py": {
       "memory": 2048,
